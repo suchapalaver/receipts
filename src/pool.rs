@@ -58,6 +58,7 @@ impl ReceiptPool {
     pub fn new() -> Self {
         Self { apps: Vec::new() }
     }
+
     pub fn add_app(&mut self, vector_id: Bytes32, collateral: U256) {
         // Defensively ensure we don't already have this app.
         // Note that the collateral may not match, but that would be ok.
@@ -73,6 +74,7 @@ impl ReceiptPool {
         };
         self.apps.push(app)
     }
+
     pub fn remove_app(&mut self, vector_id: &Bytes32) {
         if let Some(index) = self.apps.iter().position(|a| &a.vector_id == vector_id) {
             self.apps.swap_remove(index);

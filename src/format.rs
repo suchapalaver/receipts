@@ -36,7 +36,7 @@ pub fn serialize_payment_commitment_and_borrow(
     dest.extend_from_slice(&to_le_bytes(borrow.locked_payment));
 }
 
-// Recreates the BorrowedReceipt struct from
+// Recreates the BorrowedReceipt struct from the serialized representation
 pub fn deserialize_borrow_from_commitment_and_borrow(bytes: &[u8]) -> BorrowedReceipt {
     assert_eq!(bytes.len(), 176);
     let vector_app_id: Bytes32 = bytes[0..32].try_into().unwrap();
