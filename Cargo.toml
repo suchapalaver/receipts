@@ -1,0 +1,27 @@
+[package]
+name = "receipts"
+version = "0.1.0"
+authors = ["Zac Burns <That3Percent@gmail.com>"]
+edition = "2018"
+
+
+[dependencies]
+primitive-types = "0.8"
+rand = "0.8"
+eip-712-derive = { git = "ssh://git@github.com/graphprotocol/eip-712-derive.git" }
+secp256k1 = "0.20"
+lazy_static = "1.4.0"
+tiny-keccak = { version="2.0.2", features = ["sha3"] }
+
+
+# This doesn't depend on byteorder directly,
+# but if this is left out then the dependency through
+# primitive-types will select "1.4.0", which has a bug
+# causing a panic when converting a U256 to bytes.
+# So, one would like to say byteorder = "1.4.2" to fix this.
+# But, then when used in indexer-selection, that depends on
+# graphql-parser, which depends on an old version of combine,
+# which specifies an exact match for byteorder="1.3.4". So,
+# Specifying "1.4.2" causes cargo to bail when unable to resolve
+# the dependency conflict.
+byteorder = "=1.3.4"
