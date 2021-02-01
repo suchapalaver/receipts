@@ -1,4 +1,12 @@
 use crate::prelude::*;
+use eip_712_derive::DomainSeparator;
+use lazy_static::lazy_static;
+use secp256k1::{Message, Secp256k1, SecretKey, SignOnly};
+
+lazy_static! {
+    static ref SIGNER: Secp256k1<SignOnly> = Secp256k1::signing_only();
+}
+pub const BORROWED_RECEIPT_LEN: usize = 152;
 
 /// A collection of installed app that can borrow or generate receipts.
 #[derive(Default, Debug, PartialEq, Eq)]
@@ -6,19 +14,31 @@ pub struct ReceiptPool {
     apps: Vec<App>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct Keys {
+    pub address: Address,
+    pub secret: SecretKey,
+    pub domain: DomainSeparator,
+}
+
 /// A in-flight app state for a payment app that has been installed on Vector.
 // This must never implement Clone
 #[derive(Debug, PartialEq, Eq)]
 struct App {
-    /// The app id in Vector. All receipts must be signed with this id to prevent
-    /// a receipt being collected across multiple apps.
-    vector_id: Bytes32,
     /// There is no need to sync the collateral to the db. If we crash, should
     /// either rotate out apps or recover the app state from the Indexer.
     collateral: U256,
+    /// The ZKP is most efficient when using receipts from a contiguous range
+    /// as this allows the receipts to be constants rather than witnessed-in,
+    /// and also have preset data sizes for amortized proving time.
+    next_receipt_id: ReceiptID,
     /// Receipts that can be folded. These contain an unbroken chain
     /// of agreed upon history between the Indexer and Gateway.
     receipt_cache: Vec<PooledReceipt>,
+    /// Keys: Signs the receipts. Each app must have a globally unique key address.
+    /// If keys are shared across multiple Apps it will allow the Indexer to
+    /// double-collect the same receipt across multiple apps
+    keys: Keys,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -31,20 +51,7 @@ pub enum QueryStatus {
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub struct PooledReceipt {
     pub unlocked_payment: U256,
-    pub receipt_id: Bytes16,
-}
-
-#[derive(Eq, PartialEq, Debug, Clone)]
-pub struct BorrowedReceipt {
-    pub(crate) vector_app_id: Bytes32,
-    pub(crate) locked_payment: U256,
-    pub(crate) pooled_receipt: PooledReceipt,
-}
-
-impl BorrowedReceipt {
-    pub fn locked_payment(&self) -> U256 {
-        self.locked_payment
-    }
+    pub receipt_id: ReceiptID,
 }
 
 #[derive(Eq, PartialEq, Debug)]
@@ -59,24 +66,42 @@ impl ReceiptPool {
         Self { apps: Vec::new() }
     }
 
-    pub fn add_app(&mut self, vector_id: Bytes32, collateral: U256) {
+    /// This is only a minimum bound, and doesn't count
+    /// outstanding/forgotten receipts which may have account for a
+    /// large amount of unlocked payments
+    #[cfg(test)]
+    pub fn known_unlocked_payments(&self) -> U256 {
+        let mut result = U256::zero();
+        for payment in self
+            .apps
+            .iter()
+            .flat_map(|a| &a.receipt_cache)
+            .map(|r| r.unlocked_payment)
+        {
+            result += payment;
+        }
+        result
+    }
+
+    pub fn add_app(&mut self, keys: Keys, collateral: U256) {
         // Defensively ensure we don't already have this app.
         // Note that the collateral may not match, but that would be ok.
         for app in self.apps.iter() {
-            if app.vector_id == vector_id {
+            if app.keys.address == keys.address {
                 return;
             }
         }
         let app = App {
-            vector_id,
+            keys,
             collateral,
             receipt_cache: Vec::new(),
+            next_receipt_id: 0,
         };
         self.apps.push(app)
     }
 
-    pub fn remove_app(&mut self, vector_id: &Bytes32) {
-        if let Some(index) = self.apps.iter().position(|a| &a.vector_id == vector_id) {
+    pub fn remove_app(&mut self, address: &Address) {
+        if let Some(index) = self.apps.iter().position(|a| &a.keys.address == address) {
             self.apps.swap_remove(index);
         }
     }
@@ -110,19 +135,22 @@ impl ReceiptPool {
         selected_app
     }
 
-    fn app_by_id_mut(&mut self, vector_id: &Bytes32) -> Option<&mut App> {
-        self.apps.iter_mut().find(|a| &a.vector_id == vector_id)
+    fn app_by_id_mut(&mut self, address: &Address) -> Option<&mut App> {
+        self.apps.iter_mut().find(|a| &a.keys.address == address)
     }
 
-    pub fn borrow(&mut self, locked_payment: U256) -> Result<BorrowedReceipt, BorrowFail> {
+    pub fn commit(&mut self, locked_payment: U256) -> Result<Vec<u8>, BorrowFail> {
         let app = self
             .select_app(locked_payment)
             .ok_or(BorrowFail::InsufficientCollateral)?;
         app.collateral -= locked_payment;
 
-        let pooled_receipt = if app.receipt_cache.len() == 0 {
-            let mut receipt_id = Bytes16::default();
-            rng().fill_bytes(&mut receipt_id);
+        let receipt = if app.receipt_cache.len() == 0 {
+            let receipt_id = app.next_receipt_id;
+            app.next_receipt_id = app
+                .next_receipt_id
+                .checked_add(1)
+                .ok_or(BorrowFail::InsufficientCollateral)?;
             PooledReceipt {
                 receipt_id,
                 unlocked_payment: U256::zero(),
@@ -133,25 +161,56 @@ impl ReceiptPool {
             receipts.swap_remove(index)
         };
 
-        Ok(BorrowedReceipt {
-            vector_app_id: app.vector_id,
-            locked_payment,
-            pooled_receipt,
-        })
+        // Write the data in the official receipt that gets sent over the wire.
+        // This is: [vector_app_id, payment_amount, receipt_id, signature, unlocked_payment]
+        // That this math cannot overflow otherwise the app would have run out of collateral.
+        let mut dest = Vec::new();
+        let payment_amount = receipt.unlocked_payment + locked_payment;
+        dest.extend_from_slice(&app.keys.address);
+        dest.extend_from_slice(&to_le_bytes(payment_amount));
+        dest.extend_from_slice(&receipt.receipt_id.to_le_bytes());
+
+        // This is diverging from EIP-712 for a couple of reasons. The main reason
+        // is that EIP-712 unnecessarily uses extra hashes. Even in the best case
+        // EIP-712 requires 2 hashes. When variable length data is involved, there
+        // are even more hashes (which is not the most performant way to disambiguate,
+        // which is what they are accomplishing). So, just taking the best parts
+        // of EIP-712 here to prevent replay attacks by using a DomainSeparator. We
+        // could use a struct definition too, but since we have only one struct that's not
+        // necessary either.
+        let message = Message::from_slice(&hash_bytes(app.keys.domain.as_bytes(), &dest)).unwrap();
+        let signature = SIGNER.sign(&message, &app.keys.secret);
+        dest.extend_from_slice(&signature.serialize_compact());
+
+        dest.extend_from_slice(&to_le_bytes(payment_amount));
+
+        Ok(dest)
     }
 
-    pub fn release(&mut self, mut borrowed: BorrowedReceipt, status: QueryStatus) {
+    pub fn release(&mut self, bytes: &[u8], status: QueryStatus) {
+        assert_eq!(bytes.len(), BORROWED_RECEIPT_LEN);
+        let address: Address = bytes[0..20].try_into().unwrap();
+
         // Try to find the app. If there is no app, it means it's been uninstalled.
         // In that case, drop the receipt.
-        let app = if let Some(app) = self.app_by_id_mut(&borrowed.vector_app_id) {
+        let app = if let Some(app) = self.app_by_id_mut(&address) {
             app
         } else {
             return;
         };
 
+        let payment_amount = U256::from_little_endian(&bytes[20..52]);
+        // signature: [56..120]
+        let locked_payment = U256::from_little_endian(&bytes[120..152]);
+
+        let mut receipt = PooledReceipt {
+            unlocked_payment: payment_amount - locked_payment,
+            receipt_id: ReceiptID::from_le_bytes(bytes[52..56].try_into().unwrap()),
+        };
+
         let funds_destination = match status {
             QueryStatus::Failure => &mut app.collateral,
-            QueryStatus::Success => &mut borrowed.pooled_receipt.unlocked_payment,
+            QueryStatus::Success => &mut receipt.unlocked_payment,
             // If we don't know what happened (eg: timeout) we don't
             // know what the Indexer percieves the state of the receipt to
             // be. Rather than arguing about it (eg: sync protocol) just
@@ -161,9 +220,25 @@ impl ReceiptPool {
             QueryStatus::Unknown => return,
         };
 
-        *funds_destination += borrowed.locked_payment;
-        app.receipt_cache.push(borrowed.pooled_receipt);
+        *funds_destination += locked_payment;
+        app.receipt_cache.push(receipt);
     }
+}
+
+fn to_le_bytes(value: U256) -> Bytes32 {
+    let mut result = Bytes32::default();
+    value.to_little_endian(&mut result);
+    result
+}
+
+fn hash_bytes(domain_separator: &Bytes32, bytes: &[u8]) -> Bytes32 {
+    use tiny_keccak::Hasher;
+    let mut hasher = tiny_keccak::Sha3::v256();
+    hasher.update(&domain_separator[..]);
+    hasher.update(&bytes);
+    let mut output = Bytes32::default();
+    hasher.finalize(&mut output);
+    output
 }
 
 #[cfg(test)]
@@ -173,7 +248,7 @@ mod tests {
 
     #[track_caller]
     fn assert_failed_borrow(pool: &mut ReceiptPool, amount: impl Into<U256>) {
-        let receipt = pool.borrow(amount.into());
+        let receipt = pool.commit(amount.into());
         assert_eq!(receipt, Err(BorrowFail::InsufficientCollateral));
     }
 
@@ -188,11 +263,8 @@ mod tests {
     }
 
     #[track_caller]
-    fn assert_successful_borrow(
-        pool: &mut ReceiptPool,
-        amount: impl Into<U256>,
-    ) -> BorrowedReceipt {
-        pool.borrow(U256::from(amount.into()))
+    fn assert_successful_borrow(pool: &mut ReceiptPool, amount: impl Into<U256>) -> Vec<u8> {
+        pool.commit(U256::from(amount.into()))
             .expect("Should have sufficient collateral")
     }
 
@@ -206,8 +278,8 @@ mod tests {
     pub fn cannot_share_collateral_across_apps() {
         let mut pool = ReceiptPool::new();
 
-        pool.add_app(bytes32(1), 50.into());
-        pool.add_app(bytes32(2), 25.into());
+        pool.add_app(test_keys(1), 50.into());
+        pool.add_app(test_keys(2), 25.into());
 
         assert_failed_borrow(&mut pool, 60);
     }
@@ -216,14 +288,14 @@ mod tests {
     #[test]
     pub fn can_pay_for_requests() {
         let mut pool = ReceiptPool::new();
-        pool.add_app(bytes32(1), 60.into());
+        pool.add_app(test_keys(1), 60.into());
 
         for i in 1..=10 {
             let borrow = assert_successful_borrow(&mut pool, i);
-            // Verify that we have unlocked all the previous payments
-            let unlocked: u32 = (0..i).sum();
-            assert_eq!(U256::from(unlocked), borrow.pooled_receipt.unlocked_payment);
-            pool.release(borrow, QueryStatus::Success);
+            pool.release(&borrow, QueryStatus::Success);
+            // Verify that we have unlocked all the payments
+            let unlocked: u32 = (0..=i).sum();
+            assert_eq!(U256::from(unlocked), pool.known_unlocked_payments());
         }
 
         // Should run out of collateral here.
@@ -237,14 +309,14 @@ mod tests {
         // See also 460f4588-66f3-4aa3-9715-f2da8cac20b7
         let mut pool = ReceiptPool::new();
 
-        pool.add_app(bytes32(1), 4.into());
-        pool.add_app(bytes32(2), 3.into());
-        pool.add_app(bytes32(3), 1.into());
-        pool.add_app(bytes32(4), 2.into());
-        pool.add_app(bytes32(5), 2.into());
-        pool.add_app(bytes32(6), 1.into());
-        pool.add_app(bytes32(7), 3.into());
-        pool.add_app(bytes32(8), 4.into());
+        pool.add_app(test_keys(1), 4.into());
+        pool.add_app(test_keys(2), 3.into());
+        pool.add_app(test_keys(3), 1.into());
+        pool.add_app(test_keys(4), 2.into());
+        pool.add_app(test_keys(5), 2.into());
+        pool.add_app(test_keys(6), 1.into());
+        pool.add_app(test_keys(7), 3.into());
+        pool.add_app(test_keys(8), 4.into());
 
         assert_successful_borrow(&mut pool, 2);
         assert_successful_borrow(&mut pool, 4);
@@ -262,10 +334,10 @@ mod tests {
     #[test]
     fn removed_app_cannot_pay() {
         let mut pool = ReceiptPool::new();
-        pool.add_app(bytes32(2), 10.into());
-        pool.add_app(bytes32(1), 3.into());
+        pool.add_app(test_keys(2), 10.into());
+        pool.add_app(test_keys(1), 3.into());
 
-        pool.remove_app(&bytes32(2));
+        pool.remove_app(&test_keys(2).address);
 
         assert_failed_borrow(&mut pool, 5);
     }
@@ -275,7 +347,7 @@ mod tests {
     fn collateral_return() {
         let mut pool = ReceiptPool::new();
 
-        pool.add_app(bytes32(2), 10.into());
+        pool.add_app(test_keys(2), 10.into());
 
         let borrow3 = assert_successful_borrow(&mut pool, 3);
         assert_collateral_equals(&pool, 7);
@@ -283,16 +355,16 @@ mod tests {
         let borrow2 = assert_successful_borrow(&mut pool, 2);
         assert_collateral_equals(&pool, 5);
 
-        pool.release(borrow3, QueryStatus::Failure);
+        pool.release(&borrow3, QueryStatus::Failure);
         assert_collateral_equals(&pool, 8);
 
         let borrow4 = assert_successful_borrow(&mut pool, 4);
         assert_collateral_equals(&pool, 4);
 
-        pool.release(borrow2, QueryStatus::Success);
+        pool.release(&borrow2, QueryStatus::Success);
         assert_collateral_equals(&pool, 4);
 
-        pool.release(borrow4, QueryStatus::Unknown);
+        pool.release(&borrow4, QueryStatus::Unknown);
         assert_collateral_equals(&pool, 4);
     }
 }
