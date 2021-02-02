@@ -178,7 +178,11 @@ impl ReceiptPool {
         // of EIP-712 here to prevent replay attacks by using a DomainSeparator. We
         // could use a struct definition too, but since we have only one struct that's not
         // necessary either.
-        let message = Message::from_slice(&hash_bytes(app.keys.domain.as_bytes(), &dest)).unwrap();
+        //
+        // The part of the message that needs to be signed in the payment amount and receipt id only.
+        let signed_data = &dest[20..56];
+        let message =
+            Message::from_slice(&hash_bytes(app.keys.domain.as_bytes(), signed_data)).unwrap();
         let signature = SIGNER.sign(&message, &app.keys.secret);
         dest.extend_from_slice(&signature.serialize_compact());
 
