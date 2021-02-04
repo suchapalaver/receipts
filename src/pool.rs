@@ -2,11 +2,24 @@ use crate::prelude::*;
 use eip_712_derive::DomainSeparator;
 use lazy_static::lazy_static;
 use secp256k1::{Message, Secp256k1, SecretKey, SignOnly};
+use std::mem::size_of;
 
 lazy_static! {
     static ref SIGNER: Secp256k1<SignOnly> = Secp256k1::signing_only();
 }
-pub const BORROWED_RECEIPT_LEN: usize = 152;
+
+type Range = std::ops::Range<usize>;
+
+const fn next_range<T>(prev: Range) -> Range {
+    prev.end..prev.end + size_of::<T>()
+}
+
+const VECTOR_TRANSFER_ID_RANGE: Range = next_range::<Bytes32>(0..0);
+const PAYMENT_AMOUNT_RANGE: Range = next_range::<U256>(VECTOR_TRANSFER_ID_RANGE);
+const RECEIPT_ID_RANGE: Range = next_range::<ReceiptID>(PAYMENT_AMOUNT_RANGE);
+const SIGNATURE_RANGE: Range = next_range::<[u8; 64]>(RECEIPT_ID_RANGE);
+const LOCKED_PAYMENT_RANGE: Range = next_range::<U256>(SIGNATURE_RANGE);
+pub const BORROWED_RECEIPT_LEN: usize = LOCKED_PAYMENT_RANGE.end;
 
 /// A collection of installed app that can borrow or generate receipts.
 #[derive(Default, Debug, PartialEq, Eq)]
@@ -15,8 +28,7 @@ pub struct ReceiptPool {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct Keys {
-    pub address: Address,
+pub struct Signer {
     pub secret: SecretKey,
     pub domain: DomainSeparator,
 }
@@ -35,10 +47,19 @@ struct App {
     /// Receipts that can be folded. These contain an unbroken chain
     /// of agreed upon history between the Indexer and Gateway.
     receipt_cache: Vec<PooledReceipt>,
-    /// Keys: Signs the receipts. Each app must have a globally unique key address.
+    /// Signer: Signs the receipts. Each app must have a globally unique public key.
     /// If keys are shared across multiple Apps it will allow the Indexer to
     /// double-collect the same receipt across multiple apps
-    keys: Keys,
+    signer: Signer,
+    /// The address should be enough to uniquely identify a transfer,
+    /// since the security model of the Consumer relies on having a unique
+    /// address for each transfer. But, there's nothing preventing a Consumer
+    /// from putting themselves at risk - which opens up some interesting
+    /// greifing attacks. It just makes it simpler therefore to use the transfer
+    /// id to key the receipt and lookup the address rather than lookup all apps
+    /// matching an address. Unlike the address which is specified by the Consumer,
+    /// the transfer id has a unique source of truth - the Vector node.
+    vector_transfer_id: Bytes32,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -83,25 +104,30 @@ impl ReceiptPool {
         result
     }
 
-    pub fn add_app(&mut self, keys: Keys, collateral: U256) {
+    pub fn add_app(&mut self, signer: Signer, collateral: U256, vector_transfer_id: Bytes32) {
         // Defensively ensure we don't already have this app.
         // Note that the collateral may not match, but that would be ok.
         for app in self.apps.iter() {
-            if app.keys.address == keys.address {
+            if app.vector_transfer_id == vector_transfer_id {
                 return;
             }
         }
         let app = App {
-            keys,
+            signer,
             collateral,
             receipt_cache: Vec::new(),
             next_receipt_id: 0,
+            vector_transfer_id,
         };
         self.apps.push(app)
     }
 
-    pub fn remove_app(&mut self, address: &Address) {
-        if let Some(index) = self.apps.iter().position(|a| &a.keys.address == address) {
+    pub fn remove_app(&mut self, vector_transfer_id: &Bytes32) {
+        if let Some(index) = self
+            .apps
+            .iter()
+            .position(|a| &a.vector_transfer_id == vector_transfer_id)
+        {
             self.apps.swap_remove(index);
         }
     }
@@ -135,8 +161,10 @@ impl ReceiptPool {
         selected_app
     }
 
-    fn app_by_id_mut(&mut self, address: &Address) -> Option<&mut App> {
-        self.apps.iter_mut().find(|a| &a.keys.address == address)
+    fn app_by_id_mut(&mut self, vector_transfer_id: &Bytes32) -> Option<&mut App> {
+        self.apps
+            .iter_mut()
+            .find(|a| &a.vector_transfer_id == vector_transfer_id)
     }
 
     pub fn commit(&mut self, locked_payment: U256) -> Result<Vec<u8>, BorrowFail> {
@@ -166,7 +194,7 @@ impl ReceiptPool {
         // That this math cannot overflow otherwise the app would have run out of collateral.
         let mut dest = Vec::new();
         let payment_amount = receipt.unlocked_payment + locked_payment;
-        dest.extend_from_slice(&app.keys.address);
+        dest.extend_from_slice(&app.vector_transfer_id);
         dest.extend_from_slice(&to_le_bytes(payment_amount));
         dest.extend_from_slice(&receipt.receipt_id.to_le_bytes());
 
@@ -180,10 +208,10 @@ impl ReceiptPool {
         // necessary either.
         //
         // The part of the message that needs to be signed in the payment amount and receipt id only.
-        let signed_data = &dest[20..56];
+        let signed_data = &dest[PAYMENT_AMOUNT_RANGE.start..RECEIPT_ID_RANGE.end];
         let message =
-            Message::from_slice(&hash_bytes(app.keys.domain.as_bytes(), signed_data)).unwrap();
-        let signature = SIGNER.sign(&message, &app.keys.secret);
+            Message::from_slice(&hash_bytes(app.signer.domain.as_bytes(), signed_data)).unwrap();
+        let signature = SIGNER.sign(&message, &app.signer.secret);
         dest.extend_from_slice(&signature.serialize_compact());
 
         dest.extend_from_slice(&to_le_bytes(payment_amount));
@@ -193,23 +221,22 @@ impl ReceiptPool {
 
     pub fn release(&mut self, bytes: &[u8], status: QueryStatus) {
         assert_eq!(bytes.len(), BORROWED_RECEIPT_LEN);
-        let address: Address = bytes[0..20].try_into().unwrap();
+        let vector_transfer_id: Bytes32 = bytes[VECTOR_TRANSFER_ID_RANGE].try_into().unwrap();
 
         // Try to find the app. If there is no app, it means it's been uninstalled.
         // In that case, drop the receipt.
-        let app = if let Some(app) = self.app_by_id_mut(&address) {
+        let app = if let Some(app) = self.app_by_id_mut(&vector_transfer_id) {
             app
         } else {
             return;
         };
 
-        let payment_amount = U256::from_little_endian(&bytes[20..52]);
-        // signature: [56..120]
-        let locked_payment = U256::from_little_endian(&bytes[120..152]);
+        let payment_amount = U256::from_little_endian(&bytes[PAYMENT_AMOUNT_RANGE]);
+        let locked_payment = U256::from_little_endian(&bytes[LOCKED_PAYMENT_RANGE]);
 
         let mut receipt = PooledReceipt {
             unlocked_payment: payment_amount - locked_payment,
-            receipt_id: ReceiptID::from_le_bytes(bytes[52..56].try_into().unwrap()),
+            receipt_id: ReceiptID::from_le_bytes(bytes[RECEIPT_ID_RANGE].try_into().unwrap()),
         };
 
         let funds_destination = match status {
@@ -282,8 +309,8 @@ mod tests {
     pub fn cannot_share_collateral_across_apps() {
         let mut pool = ReceiptPool::new();
 
-        pool.add_app(test_keys(1), 50.into());
-        pool.add_app(test_keys(2), 25.into());
+        pool.add_app(test_signer(), 50.into(), bytes32(1));
+        pool.add_app(test_signer(), 25.into(), bytes32(2));
 
         assert_failed_borrow(&mut pool, 60);
     }
@@ -292,7 +319,7 @@ mod tests {
     #[test]
     pub fn can_pay_for_requests() {
         let mut pool = ReceiptPool::new();
-        pool.add_app(test_keys(1), 60.into());
+        pool.add_app(test_signer(), 60.into(), bytes32(1));
 
         for i in 1..=10 {
             let borrow = assert_successful_borrow(&mut pool, i);
@@ -313,14 +340,14 @@ mod tests {
         // See also 460f4588-66f3-4aa3-9715-f2da8cac20b7
         let mut pool = ReceiptPool::new();
 
-        pool.add_app(test_keys(1), 4.into());
-        pool.add_app(test_keys(2), 3.into());
-        pool.add_app(test_keys(3), 1.into());
-        pool.add_app(test_keys(4), 2.into());
-        pool.add_app(test_keys(5), 2.into());
-        pool.add_app(test_keys(6), 1.into());
-        pool.add_app(test_keys(7), 3.into());
-        pool.add_app(test_keys(8), 4.into());
+        pool.add_app(test_signer(), 4.into(), bytes32(1));
+        pool.add_app(test_signer(), 3.into(), bytes32(2));
+        pool.add_app(test_signer(), 1.into(), bytes32(3));
+        pool.add_app(test_signer(), 2.into(), bytes32(4));
+        pool.add_app(test_signer(), 2.into(), bytes32(5));
+        pool.add_app(test_signer(), 1.into(), bytes32(6));
+        pool.add_app(test_signer(), 3.into(), bytes32(7));
+        pool.add_app(test_signer(), 4.into(), bytes32(8));
 
         assert_successful_borrow(&mut pool, 2);
         assert_successful_borrow(&mut pool, 4);
@@ -338,10 +365,10 @@ mod tests {
     #[test]
     fn removed_app_cannot_pay() {
         let mut pool = ReceiptPool::new();
-        pool.add_app(test_keys(2), 10.into());
-        pool.add_app(test_keys(1), 3.into());
+        pool.add_app(test_signer(), 10.into(), bytes32(2));
+        pool.add_app(test_signer(), 3.into(), bytes32(1));
 
-        pool.remove_app(&test_keys(2).address);
+        pool.remove_app(&bytes32(2));
 
         assert_failed_borrow(&mut pool, 5);
     }
@@ -351,7 +378,7 @@ mod tests {
     fn collateral_return() {
         let mut pool = ReceiptPool::new();
 
-        pool.add_app(test_keys(2), 10.into());
+        pool.add_app(test_signer(), 10.into(), bytes32(2));
 
         let borrow3 = assert_successful_borrow(&mut pool, 3);
         assert_collateral_equals(&pool, 7);

@@ -5,7 +5,6 @@ pub(crate) use {
 };
 
 pub type Bytes32 = [u8; 32];
-pub type Address = [u8; 20];
 
 // u32 is chosen because it is unlikely that the ZKP will be able to
 // scale past this many constraints any time soon. This is enough
