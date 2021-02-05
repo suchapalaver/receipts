@@ -2,7 +2,7 @@ mod pool;
 mod prelude;
 
 use eip_712_derive::{Address, DomainSeparator, Eip712Domain};
-pub use pool::{BorrowFail, QueryStatus, ReceiptPool};
+pub use pool::{BorrowFail, QueryStatus, ReceiptPool, Signer};
 
 extern crate lazy_static;
 
