@@ -10,5 +10,5 @@ pub type Bytes32 = [u8; 32];
 // scale past this many constraints any time soon. This is enough
 // to drop 1 receipt without re-use every millisecond for 49 days straight.
 // Without protection, that would be grounds for worry but in the event this
-// does overflow, just claim insufficient collateral and rotate the payment app.
+// does overflow, just claim insufficient collateral and rotate the payment transfer.
 pub type ReceiptID = u32;

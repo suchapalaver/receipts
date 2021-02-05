@@ -28,8 +28,8 @@ pub fn test_signer() -> Signer {
 #[ignore = "This panics to output the result time. Should use a proper benchmarking lib."]
 fn speed() {
     let mut pool = ReceiptPool::new();
-    pool.add_app(test_signer(), U256::from(10000), bytes32(0));
-    pool.add_app(test_signer(), U256::from(1000000000), bytes32(1));
+    pool.add_transfer(test_signer(), U256::from(10000), bytes32(0));
+    pool.add_transfer(test_signer(), U256::from(1000000000), bytes32(1));
 
     let mut borrows = Vec::<Vec<u8>>::new();
 
