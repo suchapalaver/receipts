@@ -18,8 +18,8 @@ const VECTOR_TRANSFER_ID_RANGE: Range = next_range::<Bytes32>(0..0);
 const PAYMENT_AMOUNT_RANGE: Range = next_range::<U256>(VECTOR_TRANSFER_ID_RANGE);
 const RECEIPT_ID_RANGE: Range = next_range::<ReceiptID>(PAYMENT_AMOUNT_RANGE);
 const SIGNATURE_RANGE: Range = next_range::<[u8; 64]>(RECEIPT_ID_RANGE);
-const LOCKED_PAYMENT_RANGE: Range = next_range::<U256>(SIGNATURE_RANGE);
-pub const BORROWED_RECEIPT_LEN: usize = LOCKED_PAYMENT_RANGE.end;
+const UNLOCKED_PAYMENT_RANGE: Range = next_range::<U256>(SIGNATURE_RANGE);
+pub const BORROWED_RECEIPT_LEN: usize = UNLOCKED_PAYMENT_RANGE.end;
 
 /// A collection of installed app that can borrow or generate receipts.
 #[derive(Default, Debug, PartialEq, Eq)]
@@ -190,7 +190,7 @@ impl ReceiptPool {
         };
 
         // Write the data in the official receipt that gets sent over the wire.
-        // This is: [vector_app_id, payment_amount, receipt_id, signature, unlocked_payment]
+        // This is: [vector_transfer_id, payment_amount, receipt_id, signature]
         // That this math cannot overflow otherwise the app would have run out of collateral.
         let mut dest = Vec::new();
         let payment_amount = receipt.unlocked_payment + locked_payment;
@@ -214,7 +214,9 @@ impl ReceiptPool {
         let signature = SIGNER.sign(&message, &app.signer.secret);
         dest.extend_from_slice(&signature.serialize_compact());
 
-        dest.extend_from_slice(&to_le_bytes(payment_amount));
+        // Extend with the unlocked payment, which is necessary to return collateral
+        // in the case of failure.
+        dest.extend_from_slice(&to_le_bytes(receipt.unlocked_payment));
 
         Ok(dest)
     }
@@ -232,10 +234,11 @@ impl ReceiptPool {
         };
 
         let payment_amount = U256::from_little_endian(&bytes[PAYMENT_AMOUNT_RANGE]);
-        let locked_payment = U256::from_little_endian(&bytes[LOCKED_PAYMENT_RANGE]);
+        let unlocked_payment = U256::from_little_endian(&bytes[UNLOCKED_PAYMENT_RANGE]);
+        let locked_payment = payment_amount - unlocked_payment;
 
         let mut receipt = PooledReceipt {
-            unlocked_payment: payment_amount - locked_payment,
+            unlocked_payment,
             receipt_id: ReceiptID::from_le_bytes(bytes[RECEIPT_ID_RANGE].try_into().unwrap()),
         };
 
