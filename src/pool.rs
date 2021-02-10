@@ -1,5 +1,4 @@
 use crate::prelude::*;
-use eip_712_derive::DomainSeparator;
 use lazy_static::lazy_static;
 use secp256k1::{Message, Secp256k1, SecretKey, SignOnly};
 use std::mem::size_of;
@@ -14,10 +13,13 @@ const fn next_range<T>(prev: Range) -> Range {
     prev.end..prev.end + size_of::<T>()
 }
 
+// Keep track of the offsets to index the data in an array.
+// I'm really happy with how this turned out to make book-keeping easier.
+// A macro might make this better though.
 const VECTOR_TRANSFER_ID_RANGE: Range = next_range::<Bytes32>(0..0);
 const PAYMENT_AMOUNT_RANGE: Range = next_range::<U256>(VECTOR_TRANSFER_ID_RANGE);
 const RECEIPT_ID_RANGE: Range = next_range::<ReceiptID>(PAYMENT_AMOUNT_RANGE);
-const SIGNATURE_RANGE: Range = next_range::<[u8; 64]>(RECEIPT_ID_RANGE);
+const SIGNATURE_RANGE: Range = next_range::<[u8; 65]>(RECEIPT_ID_RANGE);
 const UNLOCKED_PAYMENT_RANGE: Range = next_range::<U256>(SIGNATURE_RANGE);
 pub const BORROWED_RECEIPT_LEN: usize = UNLOCKED_PAYMENT_RANGE.end;
 
@@ -25,12 +27,6 @@ pub const BORROWED_RECEIPT_LEN: usize = UNLOCKED_PAYMENT_RANGE.end;
 #[derive(Default, Debug, PartialEq, Eq)]
 pub struct ReceiptPool {
     transfers: Vec<Transfer>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct Signer {
-    pub secret: SecretKey,
-    pub domain: DomainSeparator,
 }
 
 /// A in-flight state for a transfer that has been initiated using Vector.
@@ -47,10 +43,10 @@ struct Transfer {
     /// Receipts that can be folded. These contain an unbroken chain
     /// of agreed upon history between the Indexer and Gateway.
     receipt_cache: Vec<PooledReceipt>,
-    /// Signer: Signs the receipts. Each transfer must have a globally unique public key.
+    /// Signer: Signs the receipts. Each transfer must have a globally unique ppk pair.
     /// If keys are shared across multiple Transfers it will allow the Indexer to
     /// double-collect the same receipt across multiple transfers
-    signer: Signer,
+    signer: SecretKey,
     /// The address should be enough to uniquely identify a transfer,
     /// since the security model of the Consumer relies on having a unique
     /// address for each transfer. But, there's nothing preventing a Consumer
@@ -106,7 +102,12 @@ impl ReceiptPool {
         result
     }
 
-    pub fn add_transfer(&mut self, signer: Signer, collateral: U256, vector_transfer_id: Bytes32) {
+    pub fn add_transfer(
+        &mut self,
+        signer: SecretKey,
+        collateral: U256,
+        vector_transfer_id: Bytes32,
+    ) {
         // Defensively ensure we don't already have this transfer.
         // Note that the collateral may not match, but that would be ok.
         for transfer in self.transfers.iter() {
@@ -196,32 +197,38 @@ impl ReceiptPool {
         // Write the data in the official receipt that gets sent over the wire.
         // This is: [vector_transfer_id, payment_amount, receipt_id, signature]
         // That this math cannot overflow otherwise the transfer would have run out of collateral.
-        let mut dest = Vec::new();
+        let mut dest = Vec::with_capacity(BORROWED_RECEIPT_LEN);
         let payment_amount = receipt.unlocked_payment + locked_payment;
         dest.extend_from_slice(&transfer.vector_transfer_id);
         dest.extend_from_slice(&to_le_bytes(payment_amount));
         dest.extend_from_slice(&receipt.receipt_id.to_le_bytes());
 
-        // This is diverging from EIP-712 for a couple of reasons. The main reason
-        // is that EIP-712 unnecessarily uses extra hashes. Even in the best case
-        // EIP-712 requires 2 hashes. When variable length data is involved, there
-        // are even more hashes (which is not the most performant way to disambiguate,
-        // which is what they are accomplishing). So, just taking the best parts
-        // of EIP-712 here to prevent replay attacks by using a DomainSeparator. We
-        // could use a struct definition too, but since we have only one struct that's not
-        // necessary either.
+        // Engineering in any kind of replay protection like as afforded by EIP-712 is
+        // unnecessary, because the signer key needs to be unique per app. It is a straightforward
+        // extension from there to also say that the signer key should be globally unique and
+        // not sign any messages that are not for the app. Since there are no other structs
+        // to sign, there are no possible collisions.
         //
         // The part of the message that needs to be signed in the payment amount and receipt id only.
         let signed_data = &dest[PAYMENT_AMOUNT_RANGE.start..RECEIPT_ID_RANGE.end];
-        let message =
-            Message::from_slice(&hash_bytes(transfer.signer.domain.as_bytes(), signed_data))
-                .unwrap();
-        let signature = SIGNER.sign(&message, &transfer.signer.secret);
-        dest.extend_from_slice(&signature.serialize_compact());
+        let message = Message::from_slice(&hash_bytes(signed_data)).unwrap();
+        let signature = SIGNER.sign_recoverable(&message, &transfer.signer);
+        let (recovery_id, signature) = signature.serialize_compact();
+        let recovery_id = match recovery_id.to_i32() {
+            0 => 27,
+            1 => 28,
+            27 => 27,
+            28 => 28,
+            _ => panic!("Invalid recovery id"),
+        };
+        dest.extend_from_slice(&signature);
+        dest.push(recovery_id);
 
         // Extend with the unlocked payment, which is necessary to return collateral
         // in the case of failure.
         dest.extend_from_slice(&to_le_bytes(receipt.unlocked_payment));
+
+        debug_assert_eq!(BORROWED_RECEIPT_LEN, dest.len());
 
         Ok(dest)
     }
@@ -270,10 +277,9 @@ fn to_le_bytes(value: U256) -> Bytes32 {
     result
 }
 
-fn hash_bytes(domain_separator: &Bytes32, bytes: &[u8]) -> Bytes32 {
+fn hash_bytes(bytes: &[u8]) -> Bytes32 {
     use tiny_keccak::Hasher;
     let mut hasher = tiny_keccak::Sha3::v256();
-    hasher.update(&domain_separator[..]);
     hasher.update(&bytes);
     let mut output = Bytes32::default();
     hasher.finalize(&mut output);
@@ -307,7 +313,7 @@ mod tests {
             .expect("Should have sufficient collateral")
     }
 
-    // Has 2 transferss which if together could pay for a receipt, but separately cannot.
+    // Has 2 transfers which if together could pay for a receipt, but separately cannot.
     //
     // It occurs to me that the updated receipts could be an array - allow this to succeed by committing
     // to partial payments across multiple transferss. This is likely not worth the complexity, but could be
