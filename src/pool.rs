@@ -39,7 +39,7 @@ struct Transfer {
     /// The ZKP is most efficient when using receipts from a contiguous range
     /// as this allows the receipts to be constants rather than witnessed-in,
     /// and also have preset data sizes for amortized proving time.
-    next_receipt_id: ReceiptID,
+    prev_receipt_id: ReceiptID,
     /// Receipts that can be folded. These contain an unbroken chain
     /// of agreed upon history between the Indexer and Gateway.
     receipt_cache: Vec<PooledReceipt>,
@@ -119,7 +119,7 @@ impl ReceiptPool {
             signer,
             collateral,
             receipt_cache: Vec::new(),
-            next_receipt_id: 0,
+            prev_receipt_id: 0,
             vector_transfer_id,
         };
         self.transfers.push(transfer)
@@ -179,11 +179,18 @@ impl ReceiptPool {
         transfer.collateral -= locked_payment;
 
         let receipt = if transfer.receipt_cache.len() == 0 {
-            let receipt_id = transfer.next_receipt_id;
-            transfer.next_receipt_id = transfer
-                .next_receipt_id
+            // This starts with the id of 1 because the transfer definition contract
+            // was written in a way that makes the receipt id of 0 invalid.
+            //
+            // Technically running out of ids is not "insufficient collateral",
+            // but it kind of is if you consider the collateral
+            // to be inaccessible. Also the mitigation is the same -
+            // rotating apps.
+            let receipt_id = transfer
+                .prev_receipt_id
                 .checked_add(1)
                 .ok_or(BorrowFail::InsufficientCollateral)?;
+            transfer.prev_receipt_id = receipt_id;
             PooledReceipt {
                 receipt_id,
                 unlocked_payment: U256::zero(),
