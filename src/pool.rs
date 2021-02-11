@@ -33,6 +33,8 @@ pub struct ReceiptPool {
 // This must never implement Clone
 #[derive(Debug, PartialEq, Eq)]
 struct Transfer {
+    /// Used to detect when collateral is running out
+    low_collateral_threshold: U256,
     /// There is no need to sync the collateral to the db. If we crash, should
     /// either rotate out transfers or recover the transfer state from the Indexer.
     collateral: U256,
@@ -56,6 +58,16 @@ struct Transfer {
     /// matching an address. Unlike the address which is specified by the Consumer,
     /// the transfer id has a unique source of truth - the Vector node.
     vector_transfer_id: Bytes32,
+}
+
+#[derive(PartialEq, Eq, Debug)]
+pub struct CommitmentResult {
+    /// The actual data that would unlock the payment.
+    /// Because of JS interop this also includes some extra metadata
+    pub commitment: Vec<u8>,
+    /// This will be true exactly once per transfer when
+    /// that transfer crosses over a threshold for low collateral.
+    pub low_collateral_warning: bool,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -118,6 +130,7 @@ impl ReceiptPool {
         let transfer = Transfer {
             signer,
             collateral,
+            low_collateral_threshold: collateral / 4,
             receipt_cache: Vec::new(),
             prev_receipt_id: 0,
             vector_transfer_id,
@@ -172,11 +185,13 @@ impl ReceiptPool {
             .find(|a| &a.vector_transfer_id == vector_transfer_id)
     }
 
-    pub fn commit(&mut self, locked_payment: U256) -> Result<Vec<u8>, BorrowFail> {
+    pub fn commit(&mut self, locked_payment: U256) -> Result<CommitmentResult, BorrowFail> {
         let transfer = self
             .select_transfer(locked_payment)
             .ok_or(BorrowFail::InsufficientCollateral)?;
+        let low_before = transfer.collateral < transfer.low_collateral_threshold;
         transfer.collateral -= locked_payment;
+        let low_now = transfer.collateral < transfer.low_collateral_threshold;
 
         let receipt = if transfer.receipt_cache.len() == 0 {
             // This starts with the id of 1 because the transfer definition contract
@@ -186,10 +201,12 @@ impl ReceiptPool {
             // but it kind of is if you consider the collateral
             // to be inaccessible. Also the mitigation is the same -
             // rotating apps.
-            let receipt_id = transfer
-                .prev_receipt_id
-                .checked_add(1)
-                .ok_or(BorrowFail::InsufficientCollateral)?;
+            let receipt_id = transfer.prev_receipt_id.checked_add(1).ok_or_else(|| {
+                // Put the unused collateral back into the channel if a receipt is not
+                // produced.
+                transfer.collateral += locked_payment;
+                BorrowFail::InsufficientCollateral
+            })?;
             transfer.prev_receipt_id = receipt_id;
             PooledReceipt {
                 receipt_id,
@@ -201,14 +218,18 @@ impl ReceiptPool {
             receipts.swap_remove(index)
         };
 
+        // Technically we don't need the mutable borrow from here on out.
+        // If we ever need to unlock more concurency when these are locked
+        // it would be posible to split out the remainder of this method.
+
         // Write the data in the official receipt that gets sent over the wire.
         // This is: [vector_transfer_id, payment_amount, receipt_id, signature]
         // That this math cannot overflow otherwise the transfer would have run out of collateral.
-        let mut dest = Vec::with_capacity(BORROWED_RECEIPT_LEN);
+        let mut commitment = Vec::with_capacity(BORROWED_RECEIPT_LEN);
         let payment_amount = receipt.unlocked_payment + locked_payment;
-        dest.extend_from_slice(&transfer.vector_transfer_id);
-        dest.extend_from_slice(&to_le_bytes(payment_amount));
-        dest.extend_from_slice(&receipt.receipt_id.to_le_bytes());
+        commitment.extend_from_slice(&transfer.vector_transfer_id);
+        commitment.extend_from_slice(&to_le_bytes(payment_amount));
+        commitment.extend_from_slice(&receipt.receipt_id.to_le_bytes());
 
         // Engineering in any kind of replay protection like as afforded by EIP-712 is
         // unnecessary, because the signer key needs to be unique per app. It is a straightforward
@@ -217,7 +238,7 @@ impl ReceiptPool {
         // to sign, there are no possible collisions.
         //
         // The part of the message that needs to be signed in the payment amount and receipt id only.
-        let signed_data = &dest[PAYMENT_AMOUNT_RANGE.start..RECEIPT_ID_RANGE.end];
+        let signed_data = &commitment[PAYMENT_AMOUNT_RANGE.start..RECEIPT_ID_RANGE.end];
         let message = Message::from_slice(&hash_bytes(signed_data)).unwrap();
         let signature = SIGNER.sign_recoverable(&message, &transfer.signer);
         let (recovery_id, signature) = signature.serialize_compact();
@@ -228,16 +249,26 @@ impl ReceiptPool {
             28 => 28,
             _ => panic!("Invalid recovery id"),
         };
-        dest.extend_from_slice(&signature);
-        dest.push(recovery_id);
+        commitment.extend_from_slice(&signature);
+        commitment.push(recovery_id);
 
         // Extend with the unlocked payment, which is necessary to return collateral
         // in the case of failure.
-        dest.extend_from_slice(&to_le_bytes(receipt.unlocked_payment));
+        commitment.extend_from_slice(&to_le_bytes(receipt.unlocked_payment));
 
-        debug_assert_eq!(BORROWED_RECEIPT_LEN, dest.len());
+        debug_assert_eq!(BORROWED_RECEIPT_LEN, commitment.len());
 
-        Ok(dest)
+        let low_collateral_warning = low_before != low_now;
+        if low_collateral_warning {
+            // Setting this to 0 ensures that if collateral is returned
+            // to the transfer
+            transfer.low_collateral_threshold = U256::zero()
+        }
+
+        Ok(CommitmentResult {
+            commitment,
+            low_collateral_warning,
+        })
     }
 
     pub fn release(&mut self, bytes: &[u8], status: QueryStatus) {
@@ -318,6 +349,7 @@ mod tests {
     fn assert_successful_borrow(pool: &mut ReceiptPool, amount: impl Into<U256>) -> Vec<u8> {
         pool.commit(U256::from(amount.into()))
             .expect("Should have sufficient collateral")
+            .commitment
     }
 
     // Has 2 transfers which if together could pay for a receipt, but separately cannot.

@@ -29,7 +29,7 @@ fn speed() {
 
     for _ in 0..2700 {
         for _ in 0..10 {
-            let commitment = pool.commit(U256::from(100)).unwrap();
+            let commitment = pool.commit(U256::from(100)).unwrap().commitment;
             borrows.push(commitment)
         }
         while let Some(borrow) = borrows.pop() {
