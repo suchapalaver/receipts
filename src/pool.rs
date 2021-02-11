@@ -61,7 +61,7 @@ struct Transfer {
 }
 
 #[derive(PartialEq, Eq, Debug)]
-pub struct CommitmentResult {
+pub struct ReceiptBorrow {
     /// The actual data that would unlock the payment.
     /// Because of JS interop this also includes some extra metadata
     pub commitment: Vec<u8>,
@@ -185,7 +185,7 @@ impl ReceiptPool {
             .find(|a| &a.vector_transfer_id == vector_transfer_id)
     }
 
-    pub fn commit(&mut self, locked_payment: U256) -> Result<CommitmentResult, BorrowFail> {
+    pub fn commit(&mut self, locked_payment: U256) -> Result<ReceiptBorrow, BorrowFail> {
         let transfer = self
             .select_transfer(locked_payment)
             .ok_or(BorrowFail::InsufficientCollateral)?;
@@ -265,7 +265,7 @@ impl ReceiptPool {
             transfer.low_collateral_threshold = U256::zero()
         }
 
-        Ok(CommitmentResult {
+        Ok(ReceiptBorrow {
             commitment,
             low_collateral_warning,
         })
