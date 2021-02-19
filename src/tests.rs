@@ -9,6 +9,32 @@ pub fn bytes32(id: u8) -> Bytes32 {
     result
 }
 
+fn debug_hex(bytes: &[u8]) {
+    use rustc_hex::ToHex as _;
+    let hex: String = bytes.to_hex();
+    println!("{}", hex);
+}
+
+// This is just useful for constructing a value to test with.
+#[test]
+pub fn make_receipt() {
+    let mut pool = ReceiptPool::new();
+    let signer = test_signer();
+    let s = secp256k1::Secp256k1::signing_only();
+    let public = secp256k1::PublicKey::from_secret_key(&s, &signer);
+
+    let mut transfer_id = Bytes32::default();
+    transfer_id[0] = 100;
+    let collateral = U256::from(200);
+    pool.add_transfer(signer, collateral, transfer_id);
+
+    let commit = pool.commit(U256::from(5)).unwrap();
+
+    debug_hex(&commit.commitment);
+
+    println!("{}", public);
+}
+
 pub fn test_signer() -> SecretKey {
     // Generated online somewhere. This is a test key with no funds
     "244226452948404D635166546A576E5A7234753778217A25432A462D4A614E64"

@@ -220,7 +220,7 @@ impl ReceiptPool {
 
         // Technically we don't need the mutable borrow from here on out.
         // If we ever need to unlock more concurency when these are locked
-        // it would be posible to split out the remainder of this method.
+        // it would be possible to split out the remainder of this method.
 
         // Write the data in the official receipt that gets sent over the wire.
         // This is: [vector_transfer_id, payment_amount, receipt_id, signature]
@@ -317,7 +317,7 @@ fn to_le_bytes(value: U256) -> Bytes32 {
 
 fn hash_bytes(bytes: &[u8]) -> Bytes32 {
     use tiny_keccak::Hasher;
-    let mut hasher = tiny_keccak::Sha3::v256();
+    let mut hasher = tiny_keccak::Keccak::v256();
     hasher.update(&bytes);
     let mut output = Bytes32::default();
     hasher.finalize(&mut output);
