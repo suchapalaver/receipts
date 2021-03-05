@@ -228,8 +228,8 @@ impl ReceiptPool {
         let mut commitment = Vec::with_capacity(BORROWED_RECEIPT_LEN);
         let payment_amount = receipt.unlocked_payment + locked_payment;
         commitment.extend_from_slice(&transfer.vector_transfer_id);
-        commitment.extend_from_slice(&to_le_bytes(payment_amount));
-        commitment.extend_from_slice(&receipt.receipt_id.to_le_bytes());
+        commitment.extend_from_slice(&to_be_bytes(payment_amount));
+        commitment.extend_from_slice(&receipt.receipt_id.to_be_bytes());
 
         // Engineering in any kind of replay protection like as afforded by EIP-712 is
         // unnecessary, because the signer key needs to be unique per app. It is a straightforward
@@ -254,7 +254,7 @@ impl ReceiptPool {
 
         // Extend with the unlocked payment, which is necessary to return collateral
         // in the case of failure.
-        commitment.extend_from_slice(&to_le_bytes(receipt.unlocked_payment));
+        commitment.extend_from_slice(&to_be_bytes(receipt.unlocked_payment));
 
         debug_assert_eq!(BORROWED_RECEIPT_LEN, commitment.len());
 
@@ -283,13 +283,13 @@ impl ReceiptPool {
             return;
         };
 
-        let payment_amount = U256::from_little_endian(&bytes[PAYMENT_AMOUNT_RANGE]);
-        let unlocked_payment = U256::from_little_endian(&bytes[UNLOCKED_PAYMENT_RANGE]);
+        let payment_amount = U256::from_big_endian(&bytes[PAYMENT_AMOUNT_RANGE]);
+        let unlocked_payment = U256::from_big_endian(&bytes[UNLOCKED_PAYMENT_RANGE]);
         let locked_payment = payment_amount - unlocked_payment;
 
         let mut receipt = PooledReceipt {
             unlocked_payment,
-            receipt_id: ReceiptID::from_le_bytes(bytes[RECEIPT_ID_RANGE].try_into().unwrap()),
+            receipt_id: ReceiptID::from_be_bytes(bytes[RECEIPT_ID_RANGE].try_into().unwrap()),
         };
 
         let funds_destination = match status {
@@ -309,9 +309,9 @@ impl ReceiptPool {
     }
 }
 
-fn to_le_bytes(value: U256) -> Bytes32 {
+fn to_be_bytes(value: U256) -> Bytes32 {
     let mut result = Bytes32::default();
-    value.to_little_endian(&mut result);
+    value.to_big_endian(&mut result);
     result
 }
 
