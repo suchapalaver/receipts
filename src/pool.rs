@@ -29,6 +29,21 @@ pub struct ReceiptPool {
     transfers: Vec<Transfer>,
 }
 
+// The maximum receipt id allowed by the size limit.
+// For now, the size limit is 50MiB for a particular Connext
+// API when resolving using uncompressed JSON. We could
+// calculate a hard limit here since every value has bounds.
+// (eg: We know exactly how much the numbers 1-200000 in JSON are exactly,
+// and how much the amount field would be if each was set to U256 MAX).
+// But instead this is just a conservative estimate. That leaves room
+// for Connext to change their APIs and introduce more overhead without
+// creating a security hole.
+//
+// Even when there is a ZKP there will be a maximum receipt id, but
+// it could be much higher.
+const MAX_RECEIPT_ID: u32 = 200000;
+const LOW_RECEIPT_CAPACITY: u32 = 170000;
+
 /// A in-flight state for a transfer that has been initiated using Vector.
 // This must never implement Clone
 #[derive(Debug, PartialEq, Eq)]
@@ -191,7 +206,7 @@ impl ReceiptPool {
             .ok_or(BorrowFail::InsufficientCollateral)?;
         let low_before = transfer.collateral < transfer.low_collateral_threshold;
         transfer.collateral -= locked_payment;
-        let low_now = transfer.collateral < transfer.low_collateral_threshold;
+        let mut low_now = transfer.collateral < transfer.low_collateral_threshold;
 
         let receipt = if transfer.receipt_cache.len() == 0 {
             // This starts with the id of 1 because the transfer definition contract
@@ -201,12 +216,20 @@ impl ReceiptPool {
             // but it kind of is if you consider the collateral
             // to be inaccessible. Also the mitigation is the same -
             // rotating apps.
-            let receipt_id = transfer.prev_receipt_id.checked_add(1).ok_or_else(|| {
-                // Put the unused collateral back into the channel if a receipt is not
-                // produced.
-                transfer.collateral += locked_payment;
-                BorrowFail::InsufficientCollateral
-            })?;
+            match transfer.prev_receipt_id {
+                MAX_RECEIPT_ID => {
+                    // Do not produce a receipt if it would exceed MAX_RECEIPT_ID
+                    // Put the unused collateral back into the transfer since it
+                    // is not locked in a receipt.
+                    transfer.collateral += locked_payment;
+                    return Err(BorrowFail::InsufficientCollateral);
+                }
+                LOW_RECEIPT_CAPACITY => {
+                    low_now = true;
+                }
+                _ => {}
+            };
+            let receipt_id = transfer.prev_receipt_id + 1;
             transfer.prev_receipt_id = receipt_id;
             PooledReceipt {
                 receipt_id,
@@ -296,12 +319,23 @@ impl ReceiptPool {
             QueryStatus::Failure => &mut transfer.collateral,
             QueryStatus::Success => &mut receipt.unlocked_payment,
             // If we don't know what happened (eg: timeout) we don't
-            // know what the Indexer percieves the state of the receipt to
+            // know what the Indexer perceives the state of the receipt to
             // be. Rather than arguing about it (eg: sync protocol) just
             // never use this receipt again by dropping it here. This
             // does not change any security invariants. We also do not reclaim
             // the collateral until transfer uninstall.
-            QueryStatus::Unknown => return,
+            //
+            // FIXME: HACK! Until we have a ZKP and can remove trust from the
+            // gateway return Unknown receipts to the pool as if they failed.
+            // Fail is the most likely outcome. Dropping the receipt would
+            // have the effect of syncing later. Until we have the ZKP though,
+            // the threshold where receipts deplete is much lower than we would
+            // like. Once there is a ZKP and trust is removed from the Gateway
+            // this behavior needs to be restored because the indexer is expected
+            // to verify that the balance is increasing and in some cases they
+            // will not agree (eg: query was served but the network failed)
+            // QueryStatus::Unknown => return,
+            QueryStatus::Unknown => &mut transfer.collateral,
         };
 
         *funds_destination += locked_payment;
