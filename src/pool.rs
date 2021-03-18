@@ -48,11 +48,13 @@ const LOW_RECEIPT_CAPACITY: u32 = 170000;
 // This must never implement Clone
 #[derive(Debug, PartialEq, Eq)]
 struct Transfer {
+    /// Full amount of collateral when the transfer is created
+    initial_collateral: U256,
     /// Used to detect when collateral is running out
     low_collateral_threshold: U256,
     /// There is no need to sync the collateral to the db. If we crash, should
     /// either rotate out transfers or recover the transfer state from the Indexer.
-    collateral: U256,
+    remaining_collateral: U256,
     /// The ZKP is most efficient when using receipts from a contiguous range
     /// as this allows the receipts to be constants rather than witnessed-in,
     /// and also have preset data sizes for amortized proving time.
@@ -144,7 +146,8 @@ impl ReceiptPool {
         }
         let transfer = Transfer {
             signer,
-            collateral,
+            initial_collateral: collateral,
+            remaining_collateral: collateral,
             low_collateral_threshold: collateral / 4,
             receipt_cache: Vec::new(),
             prev_receipt_id: 0,
@@ -164,9 +167,38 @@ impl ReceiptPool {
     }
 
     pub fn has_collateral_for(&self, locked_payment: U256) -> bool {
-        self.transfers
-            .iter()
-            .any(|a| a.collateral >= locked_payment)
+        self.transfers.iter().any(|a| {
+            a.remaining_collateral >= locked_payment
+                && (a.receipt_cache.len() > 0 || a.prev_receipt_id != MAX_RECEIPT_ID)
+        })
+    }
+
+    pub fn recommended_collateral(&self) -> U256 {
+        // Went through a couple of options here.
+        // The most succinct answer to the question of
+        // how much collateral we need is just "more than we are using".
+        // So multiply the used amount by 2. Min/Max is dealt with outside
+        // in the environment return 0 or U256::MAX is fine.
+        //
+        // One important criteria is that the collateral increases geometrically
+        // when we rotate a transfer out early for low collateral. The low
+        // collateral warning goes out at 3/4 of the collateral so doubling
+        // at that moment gives us 1.5x. If the next transfer runs out of
+        // collateral before the previous is removed then collateral grows
+        // quicker, which is good.
+        //
+        // The one thing this doesn't do is to gracefully degrade. Instead,
+        // it can drop off fast with no usage. I think that's actually ok.
+        // This isn't TCP and for the expected lifetime of transfers a large
+        // drop in volume should sample a large enough time to be considered
+        // significant.
+        let mut used = U256::zero();
+
+        for transfer in self.transfers.iter() {
+            used = used.saturating_add(transfer.initial_collateral - transfer.remaining_collateral);
+        }
+
+        used.saturating_mul(2.into())
     }
 
     // Uses the transfer with the least collateral that can sustain the payment.
@@ -178,14 +210,14 @@ impl ReceiptPool {
     fn select_transfer(&mut self, locked_payment: U256) -> Option<&mut Transfer> {
         let mut selected_transfer = None;
         for transfer in self.transfers.iter_mut() {
-            if transfer.collateral < locked_payment {
+            if transfer.remaining_collateral < locked_payment {
                 continue;
             }
 
             match selected_transfer {
                 None => selected_transfer = Some(transfer),
                 Some(ref mut selected) => {
-                    if selected.collateral > transfer.collateral {
+                    if selected.remaining_collateral > transfer.remaining_collateral {
                         *selected = transfer;
                     }
                 }
@@ -204,9 +236,9 @@ impl ReceiptPool {
         let transfer = self
             .select_transfer(locked_payment)
             .ok_or(BorrowFail::InsufficientCollateral)?;
-        let low_before = transfer.collateral < transfer.low_collateral_threshold;
-        transfer.collateral -= locked_payment;
-        let mut low_now = transfer.collateral < transfer.low_collateral_threshold;
+        let low_before = transfer.remaining_collateral < transfer.low_collateral_threshold;
+        transfer.remaining_collateral -= locked_payment;
+        let mut low_now = transfer.remaining_collateral < transfer.low_collateral_threshold;
 
         let receipt = if transfer.receipt_cache.len() == 0 {
             // This starts with the id of 1 because the transfer definition contract
@@ -221,7 +253,7 @@ impl ReceiptPool {
                     // Do not produce a receipt if it would exceed MAX_RECEIPT_ID
                     // Put the unused collateral back into the transfer since it
                     // is not locked in a receipt.
-                    transfer.collateral += locked_payment;
+                    transfer.remaining_collateral += locked_payment;
                     return Err(BorrowFail::InsufficientCollateral);
                 }
                 LOW_RECEIPT_CAPACITY => {
@@ -316,7 +348,7 @@ impl ReceiptPool {
         };
 
         let funds_destination = match status {
-            QueryStatus::Failure => &mut transfer.collateral,
+            QueryStatus::Failure => &mut transfer.remaining_collateral,
             QueryStatus::Success => &mut receipt.unlocked_payment,
             // If we don't know what happened (eg: timeout) we don't
             // know what the Indexer perceives the state of the receipt to
@@ -335,7 +367,7 @@ impl ReceiptPool {
             // to verify that the balance is increasing and in some cases they
             // will not agree (eg: query was served but the network failed)
             // QueryStatus::Unknown => return,
-            QueryStatus::Unknown => &mut transfer.collateral,
+            QueryStatus::Unknown => &mut transfer.remaining_collateral,
         };
 
         *funds_destination += locked_payment;
