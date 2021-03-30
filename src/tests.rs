@@ -12,7 +12,7 @@ pub fn bytes32(id: u8) -> Bytes32 {
 fn debug_hex(bytes: &[u8]) {
     use rustc_hex::ToHex as _;
     let hex: String = bytes.to_hex();
-    println!("{}", hex);
+    println!("{}\n", hex);
 }
 
 // This is just useful for constructing a value to test with.
@@ -20,24 +20,29 @@ fn debug_hex(bytes: &[u8]) {
 pub fn make_receipt() {
     let mut pool = ReceiptPool::new();
     let signer = test_signer();
-    let s = secp256k1::Secp256k1::signing_only();
-    let public = secp256k1::PublicKey::from_secret_key(&s, &signer);
 
     let mut transfer_id = Bytes32::default();
     transfer_id[0] = 100;
     let collateral = U256::from(200);
     pool.add_transfer(signer, collateral, transfer_id);
 
-    let commit = pool.commit(U256::from(5)).unwrap();
+    println!("Receipt 0: value 5");
+    let commit0 = pool.commit(U256::from(5)).unwrap();
+    debug_hex(&commit0.commitment);
 
-    debug_hex(&commit.commitment);
-
-    println!("{}", public);
+    println!("Receipt 1: value 8");
+    let commit1 = pool.commit(U256::from(8)).unwrap();
+    debug_hex(&commit1.commitment);
 }
 
 pub fn test_signer() -> SecretKey {
-    // Generated online somewhere. This is a test key with no funds
-    "244226452948404D635166546A576E5A7234753778217A25432A462D4A614E64"
+    // Found this online. This is a test key with no funds.
+    /*
+    Private key:  9d6803c0326f725338d42d580aba5e7a2d1d4b95fd602609f5e008e17f030d87
+    Public key:  aecdc332a922c3d1b643ee158b9ce8529e28a5b18bbea4e4ba7e57f698b719ff9598ef3aa85866cb86abadf3df79bb6bd1d96f2595800aaf5dc3b22b70afcf3e
+    Address: 0xc61127cdfb5380df4214b0200b9a07c7c49d34f9
+    */
+    "9d6803c0326f725338d42d580aba5e7a2d1d4b95fd602609f5e008e17f030d87"
         .parse()
         .unwrap()
 }

@@ -295,6 +295,7 @@ impl ReceiptPool {
         // The part of the message that needs to be signed in the payment amount and receipt id only.
         let signed_data = &commitment[PAYMENT_AMOUNT_RANGE.start..RECEIPT_ID_RANGE.end];
         let message = Message::from_slice(&hash_bytes(signed_data)).unwrap();
+
         let signature = SIGNER.sign_recoverable(&message, &transfer.signer);
         let (recovery_id, signature) = signature.serialize_compact();
         let recovery_id = match recovery_id.to_i32() {
@@ -366,6 +367,7 @@ impl ReceiptPool {
             // this behavior needs to be restored because the indexer is expected
             // to verify that the balance is increasing and in some cases they
             // will not agree (eg: query was served but the network failed)
+            // See also 9e55d5ff-8b49-4af4-9c1d-4137ac4cffb4
             // QueryStatus::Unknown => return,
             QueryStatus::Unknown => &mut transfer.remaining_collateral,
         };
@@ -406,7 +408,7 @@ mod tests {
         let expect = expect.into();
         let mut collateral = U256::zero();
         for transfer in pool.transfers.iter() {
-            collateral += transfer.collateral;
+            collateral += transfer.remaining_collateral;
         }
         assert_eq!(expect, collateral);
     }
@@ -508,13 +510,15 @@ mod tests {
         pool.release(&borrow3, QueryStatus::Failure);
         assert_collateral_equals(&pool, 8);
 
-        let borrow4 = assert_successful_borrow(&mut pool, 4);
+        let _borrow4 = assert_successful_borrow(&mut pool, 4);
         assert_collateral_equals(&pool, 4);
 
         pool.release(&borrow2, QueryStatus::Success);
         assert_collateral_equals(&pool, 4);
 
-        pool.release(&borrow4, QueryStatus::Unknown);
-        assert_collateral_equals(&pool, 4);
+        // Unknown status is temporarily "wrong"
+        // See also 9e55d5ff-8b49-4af4-9c1d-4137ac4cffb4
+        //pool.release(&borrow4, QueryStatus::Unknown);
+        //assert_collateral_equals(&pool, 4);
     }
 }
