@@ -3,10 +3,8 @@ use crate::prelude::*;
 use secp256k1::SecretKey;
 use std::time::Instant;
 
-pub fn bytes32(id: u8) -> Bytes32 {
-    let mut result = Bytes32::default();
-    result[0] = id;
-    result
+pub fn bytes<const N: usize>(id: u8) -> [u8; N] {
+    [id; N]
 }
 
 fn debug_hex(bytes: &[u8]) {
@@ -21,10 +19,7 @@ pub fn make_receipt() {
     let mut pool = ReceiptPool::new();
     let signer = test_signer();
 
-    let mut transfer_id = Bytes32::default();
-    transfer_id[0] = 100;
-    let collateral = U256::from(200);
-    pool.add_transfer(signer, collateral, transfer_id);
+    pool.add_allocation(signer, bytes(100));
 
     println!("Receipt 0: value 5");
     let commit0 = pool.commit(U256::from(5)).unwrap();
@@ -51,8 +46,8 @@ pub fn test_signer() -> SecretKey {
 #[ignore = "This panics to output the result time. Should use a proper benchmarking lib."]
 fn speed() {
     let mut pool = ReceiptPool::new();
-    pool.add_transfer(test_signer(), U256::from(10000), bytes32(0));
-    pool.add_transfer(test_signer(), U256::from(1000000000), bytes32(1));
+    pool.add_allocation(test_signer(), bytes(0));
+    pool.add_allocation(test_signer(), bytes(1));
 
     let mut borrows = Vec::<Vec<u8>>::new();
 
