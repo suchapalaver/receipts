@@ -1,6 +1,7 @@
 use crate::prelude::*;
 use secp256k1::{Message, PublicKey, SecretKey};
 use std::fmt;
+use tiny_keccak::{Hasher, Keccak};
 
 #[derive(Debug)]
 pub enum VoucherError {
@@ -41,6 +42,9 @@ const SIZE: usize = SIGNATURE_RANGE.end; // 112 bytes, last I checked.
 /// Security: The voucher_signer must be dedicated to this purpose, hold no funds,
 /// and sign no other messages except with this method. Similarly, the allocation
 /// signer must only sign allocations and serve no other purpose and hold no funds.
+/// One exception is that they may be the same signer. They are allowed to be different
+/// in case we want to rotate the voucher_signer and keep old receipts intact. Having
+/// them be the same signer is ok only because they sign messages of different lengths.
 pub fn receipts_to_voucher(
     allocation_id: &Address,
     allocation_signer: &PublicKey,
@@ -71,13 +75,21 @@ pub fn receipts_to_voucher(
         }
         prev_receipt_id = receipt_id;
 
-        let signed_data = &chunk[PAYMENT_AMOUNT_RANGE.start..RECEIPT_ID_RANGE.end];
         let signature = &chunk[SIGNATURE_RANGE];
 
         let signature = secp256k1::Signature::from_compact(&signature[..64])
             .map_err(|_| VoucherError::InvalidData)?;
 
-        let message = Message::from_slice(&hash_bytes(signed_data)).unwrap();
+        // Create the signed message from the receipt data.
+        // Allocationid is "untrusted" and kept separate from the receipt data.
+        // This also de-duplicates it in the message.
+        let mut hasher = Keccak::v256();
+        hasher.update(allocation_id);
+        hasher.update(&chunk[PAYMENT_AMOUNT_RANGE.start..RECEIPT_ID_RANGE.end]);
+        let mut message = Bytes32::default();
+        hasher.finalize(&mut message);
+
+        let message = Message::from_slice(&message).unwrap();
 
         SECP256K1
             .verify(&message, &signature, allocation_signer)

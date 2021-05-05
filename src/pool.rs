@@ -151,7 +151,7 @@ impl ReceiptPool {
         //
         // The part of the message that needs to be signed in the payment amount and receipt id only.
         let signature = sign(
-            &commitment[PAYMENT_AMOUNT_RANGE.start..RECEIPT_ID_RANGE.end],
+            &commitment[ALLOCATION_ID_RANGE.start..RECEIPT_ID_RANGE.end],
             &allocation.signer,
         );
         commitment.extend_from_slice(&signature);
