@@ -1,26 +1,14 @@
 use crate::prelude::*;
-use lazy_static::lazy_static;
 use rand::RngCore;
-use secp256k1::{Message, Secp256k1, SecretKey, SignOnly};
-use std::mem::size_of;
-
-lazy_static! {
-    static ref SIGNER: Secp256k1<SignOnly> = Secp256k1::signing_only();
-}
-
-type Range = std::ops::Range<usize>;
-
-const fn next_range<T>(prev: Range) -> Range {
-    prev.end..prev.end + size_of::<T>()
-}
+use secp256k1::SecretKey;
 
 // Keep track of the offsets to index the data in an array.
 // I'm really happy with how this turned out to make book-keeping easier.
 // A macro might make this better though.
 const ALLOCATION_ID_RANGE: Range = next_range::<Address>(0..0);
 const PAYMENT_AMOUNT_RANGE: Range = next_range::<U256>(ALLOCATION_ID_RANGE);
-const RECEIPT_ID_RANGE: Range = next_range::<Bytes16>(PAYMENT_AMOUNT_RANGE);
-const SIGNATURE_RANGE: Range = next_range::<[u8; 65]>(RECEIPT_ID_RANGE);
+const RECEIPT_ID_RANGE: Range = next_range::<ReceiptId>(PAYMENT_AMOUNT_RANGE);
+const SIGNATURE_RANGE: Range = next_range::<Signature>(RECEIPT_ID_RANGE);
 const UNLOCKED_PAYMENT_RANGE: Range = next_range::<U256>(SIGNATURE_RANGE);
 pub const BORROWED_RECEIPT_LEN: usize = UNLOCKED_PAYMENT_RANGE.end;
 
@@ -44,13 +32,6 @@ struct Allocation {
     allocation_id: Address,
 }
 
-#[derive(PartialEq, Eq, Debug)]
-pub struct ReceiptBorrow {
-    /// The actual data that would unlock the payment.
-    /// Because of JS interop this also includes some extra metadata
-    pub commitment: Vec<u8>,
-}
-
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum QueryStatus {
     Success,
@@ -61,7 +42,7 @@ pub enum QueryStatus {
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub struct PooledReceipt {
     pub unlocked_payment: U256,
-    pub receipt_id: Bytes16,
+    pub receipt_id: ReceiptId,
 }
 
 #[derive(Eq, PartialEq, Debug)]
@@ -130,11 +111,11 @@ impl ReceiptPool {
             .find(|a| &a.allocation_id == allocation_id)
     }
 
-    pub fn commit(&mut self, locked_payment: U256) -> Result<ReceiptBorrow, BorrowFail> {
+    pub fn commit(&mut self, locked_payment: U256) -> Result<Vec<u8>, BorrowFail> {
         let allocation = self.select_allocation()?;
 
         let receipt = if allocation.receipt_cache.len() == 0 {
-            let mut receipt_id = Bytes16::default();
+            let mut receipt_id = ReceiptId::default();
             rng().fill_bytes(&mut receipt_id);
             PooledReceipt {
                 receipt_id,
@@ -165,20 +146,11 @@ impl ReceiptPool {
         // to sign, there are no possible collisions.
         //
         // The part of the message that needs to be signed in the payment amount and receipt id only.
-        let signed_data = &commitment[PAYMENT_AMOUNT_RANGE.start..RECEIPT_ID_RANGE.end];
-        let message = Message::from_slice(&hash_bytes(signed_data)).unwrap();
-
-        let signature = SIGNER.sign_recoverable(&message, &allocation.signer);
-        let (recovery_id, signature) = signature.serialize_compact();
-        let recovery_id = match recovery_id.to_i32() {
-            0 => 27,
-            1 => 28,
-            27 => 27,
-            28 => 28,
-            _ => panic!("Invalid recovery id"),
-        };
+        let signature = sign(
+            &commitment[PAYMENT_AMOUNT_RANGE.start..RECEIPT_ID_RANGE.end],
+            &allocation.signer,
+        );
         commitment.extend_from_slice(&signature);
-        commitment.push(recovery_id);
 
         // Extend with the unlocked payment, which is necessary to return collateral
         // in the case of failure.
@@ -186,7 +158,7 @@ impl ReceiptPool {
 
         debug_assert_eq!(BORROWED_RECEIPT_LEN, commitment.len());
 
-        Ok(ReceiptBorrow { commitment })
+        Ok(commitment)
     }
 
     pub fn release(&mut self, bytes: &[u8], status: QueryStatus) {
@@ -215,21 +187,6 @@ impl ReceiptPool {
     }
 }
 
-fn to_be_bytes(value: U256) -> Bytes32 {
-    let mut result = Bytes32::default();
-    value.to_big_endian(&mut result);
-    result
-}
-
-fn hash_bytes(bytes: &[u8]) -> Bytes32 {
-    use tiny_keccak::Hasher;
-    let mut hasher = tiny_keccak::Keccak::v256();
-    hasher.update(&bytes);
-    let mut output = Bytes32::default();
-    hasher.finalize(&mut output);
-    output
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,7 +202,6 @@ mod tests {
     fn assert_successful_borrow(pool: &mut ReceiptPool, amount: impl Into<U256>) -> Vec<u8> {
         pool.commit(U256::from(amount.into()))
             .expect("Should be able to borrow")
-            .commitment
     }
 
     // Simple happy-path case of paying for requests in a loop.

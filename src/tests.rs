@@ -1,6 +1,7 @@
-use crate::pool::*;
 use crate::prelude::*;
-use secp256k1::SecretKey;
+use crate::*;
+use secp256k1::{PublicKey, SecretKey};
+use std::convert::TryFrom;
 use std::time::Instant;
 
 pub fn bytes<const N: usize>(id: u8) -> [u8; N] {
@@ -23,11 +24,11 @@ pub fn make_receipt() {
 
     println!("Receipt 0: value 5");
     let commit0 = pool.commit(U256::from(5)).unwrap();
-    debug_hex(&commit0.commitment);
+    debug_hex(&commit0);
 
     println!("Receipt 1: value 8");
     let commit1 = pool.commit(U256::from(8)).unwrap();
-    debug_hex(&commit1.commitment);
+    debug_hex(&commit1);
 }
 
 pub fn test_signer() -> SecretKey {
@@ -55,7 +56,7 @@ fn speed() {
 
     for _ in 0..2700 {
         for _ in 0..10 {
-            let commitment = pool.commit(U256::from(100)).unwrap().commitment;
+            let commitment = pool.commit(U256::from(100)).unwrap();
             borrows.push(commitment)
         }
         while let Some(borrow) = borrows.pop() {
@@ -66,4 +67,53 @@ fn speed() {
     let end = Instant::now();
 
     panic!("{:?}", end - start);
+}
+
+#[test]
+fn vouchers() {
+    let allocation_id = bytes(1);
+
+    // Create a bunch of receipts
+    let mut pool = ReceiptPool::new();
+    pool.add_allocation(test_signer(), allocation_id);
+    let mut borrows = Vec::<Vec<u8>>::new();
+
+    let mut total = 0;
+    for i in 2..10 {
+        for borrow in borrows.drain(..) {
+            pool.release(&borrow, QueryStatus::Success);
+        }
+        for _ in 0..i {
+            total += 1;
+            let commitment = pool.commit(U256::from(1)).unwrap();
+            borrows.push(commitment);
+        }
+    }
+
+    let mut receipts = Vec::with_capacity(112 * borrows.len());
+
+    // Sort by receipt id
+    borrows.sort_by_key(|b| ReceiptId::try_from(&b[52..67]).unwrap());
+
+    // Serialize
+    for borrow in borrows.iter() {
+        receipts.extend_from_slice(&borrow[20..132]);
+    }
+
+    // Convert to voucher
+    let allocation_signer = PublicKey::from_secret_key(&SECP256K1, &test_signer());
+
+    let voucher = receipts_to_voucher(
+        &allocation_id,
+        &allocation_signer,
+        &test_signer(),
+        &receipts,
+    )
+    .unwrap();
+
+    let voucher_allocation = &voucher[..20];
+    assert_eq!(voucher_allocation, &allocation_id);
+
+    let voucher_amount = U256::from_big_endian(&voucher[20..52]);
+    assert_eq!(voucher_amount, U256::from(total));
 }
