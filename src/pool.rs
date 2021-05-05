@@ -100,6 +100,10 @@ impl ReceiptPool {
         }
     }
 
+    pub fn has_collateral_for(&self) -> bool {
+        self.allocations.len() != 0
+    }
+
     fn select_allocation(&mut self) -> Result<&mut Allocation, BorrowFail> {
         // Prefer the one most recently added
         self.allocations.last_mut().ok_or(BorrowFail::NoAllocation)
