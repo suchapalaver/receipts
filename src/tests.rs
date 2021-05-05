@@ -117,3 +117,45 @@ fn vouchers() {
     let voucher_amount = U256::from_big_endian(&voucher[20..52]);
     assert_eq!(voucher_amount, U256::from(total));
 }
+
+#[test]
+#[ignore = "Benchmark"]
+fn vouchers_speed() {
+    let allocation_id = bytes(1);
+
+    // Create a bunch of receipts
+    let mut pool = ReceiptPool::new();
+    pool.add_allocation(test_signer(), allocation_id);
+    let mut borrows = Vec::<Vec<u8>>::new();
+
+    for _ in 1..100000 {
+        let commitment = pool.commit(U256::from(1)).unwrap();
+        borrows.push(commitment);
+    }
+
+    let mut receipts = Vec::with_capacity(112 * borrows.len());
+
+    // Sort by receipt id
+    borrows.sort_by_key(|b| ReceiptId::try_from(&b[52..67]).unwrap());
+
+    // Serialize
+    for borrow in borrows.iter() {
+        receipts.extend_from_slice(&borrow[20..132]);
+    }
+
+    // Convert to voucher
+    let allocation_signer = PublicKey::from_secret_key(&SECP256K1, &test_signer());
+
+    let start = Instant::now();
+    receipts_to_voucher(
+        &allocation_id,
+        &allocation_signer,
+        &test_signer(),
+        &receipts,
+    )
+    .unwrap();
+
+    let end = Instant::now();
+
+    dbg!(end - start);
+}
