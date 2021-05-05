@@ -1,8 +1,5 @@
 use crate::prelude::*;
-use secp256k1::{
-    recovery::{RecoverableSignature, RecoveryId},
-    Message, PublicKey, SecretKey,
-};
+use secp256k1::{Message, PublicKey, SecretKey};
 use std::fmt;
 
 #[derive(Debug)]
@@ -77,25 +74,14 @@ pub fn receipts_to_voucher(
         let signed_data = &chunk[PAYMENT_AMOUNT_RANGE.start..RECEIPT_ID_RANGE.end];
         let signature = &chunk[SIGNATURE_RANGE];
 
-        let recovery_id = signature[64];
-        let recovery_id = match recovery_id {
-            0 | 1 => RecoveryId::from_i32(recovery_id as i32).unwrap(),
-            27 | 28 => RecoveryId::from_i32((recovery_id - 27) as i32).unwrap(),
-            _ => return Err(VoucherError::InvalidData)?,
-        };
-
-        let signature = RecoverableSignature::from_compact(&signature[..64], recovery_id)
+        let signature = secp256k1::Signature::from_compact(&signature[..64])
             .map_err(|_| VoucherError::InvalidData)?;
 
         let message = Message::from_slice(&hash_bytes(signed_data)).unwrap();
 
-        let recovered_signer = SECP256K1
-            .recover(&message, &signature)
-            .map_err(|_| VoucherError::InvalidData)?;
-
-        if &recovered_signer != allocation_signer {
-            return Err(VoucherError::InvalidSignature);
-        }
+        SECP256K1
+            .verify(&message, &signature, allocation_signer)
+            .map_err(|_| VoucherError::InvalidSignature)?;
 
         let this_amount = U256::from_big_endian(&chunk[PAYMENT_AMOUNT_RANGE]);
 
