@@ -78,14 +78,15 @@ fn vouchers() {
     pool.add_allocation(test_signer(), allocation_id);
     let mut borrows = Vec::<Vec<u8>>::new();
 
-    let mut total = 0;
+    let mut total = U256::zero();
     for i in 2..10 {
         for borrow in borrows.drain(..) {
             pool.release(&borrow, QueryStatus::Success);
         }
         for _ in 0..i {
-            total += 1;
-            let commitment = pool.commit(U256::from(1)).unwrap();
+            let amount = U256::from(1);
+            total += amount;
+            let commitment = pool.commit(amount).unwrap();
             borrows.push(commitment);
         }
     }
@@ -111,11 +112,8 @@ fn vouchers() {
     )
     .unwrap();
 
-    let voucher_allocation = &voucher[..20];
-    assert_eq!(voucher_allocation, &allocation_id);
-
-    let voucher_amount = U256::from_big_endian(&voucher[20..52]);
-    assert_eq!(voucher_amount, U256::from(total));
+    assert_eq!(&voucher.allocation_id, &allocation_id);
+    assert_eq!(&voucher.amount, &total);
 }
 
 #[test]

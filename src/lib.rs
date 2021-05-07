@@ -4,7 +4,7 @@ mod prelude;
 mod voucher;
 
 pub use pool::{BorrowFail, QueryStatus, ReceiptPool};
-pub use voucher::{receipts_to_voucher, VoucherError};
+pub use voucher::{receipts_to_voucher, Voucher, VoucherError};
 
 extern crate lazy_static;
 

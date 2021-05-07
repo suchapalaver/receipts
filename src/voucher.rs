@@ -29,6 +29,12 @@ const RECEIPT_ID_RANGE: Range = next_range::<ReceiptId>(PAYMENT_AMOUNT_RANGE);
 const SIGNATURE_RANGE: Range = next_range::<Signature>(RECEIPT_ID_RANGE);
 const SIZE: usize = SIGNATURE_RANGE.end; // 112 bytes, last I checked.
 
+pub struct Voucher {
+    pub allocation_id: Address,
+    pub amount: U256,
+    pub signature: Signature,
+}
+
 // TODO: (Performance)
 // At 112 bytes each 1M receipts costs 106MiB.
 // This payload size is concerning, so it may be useful to allow for this to be
@@ -50,7 +56,7 @@ pub fn receipts_to_voucher(
     allocation_signer: &PublicKey,
     voucher_signer: &SecretKey,
     data: &[u8],
-) -> Result<Vec<u8>, VoucherError> {
+) -> Result<Voucher, VoucherError> {
     // Data must be an array of fixed size elements
     // containing receipts.
     if data.len() % SIZE != 0 {
@@ -105,11 +111,14 @@ pub fn receipts_to_voucher(
         return Err(VoucherError::NoValue);
     }
 
-    // Write the commitment that can be brought on-chain
     let mut message = Vec::new();
     message.extend_from_slice(allocation_id);
     message.extend_from_slice(&to_be_bytes(total));
     let signature = sign(&message, voucher_signer);
-    message.extend_from_slice(&signature);
-    Ok(message)
+
+    Ok(Voucher {
+        allocation_id: *allocation_id,
+        amount: total,
+        signature,
+    })
 }
