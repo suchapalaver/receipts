@@ -30,14 +30,14 @@ impl fmt::Display for VoucherError {
     }
 }
 
-const PAYMENT_AMOUNT_RANGE: Range = next_range::<U256>(0..0);
-const RECEIPT_ID_RANGE: Range = next_range::<ReceiptId>(PAYMENT_AMOUNT_RANGE);
+const FEE_RANGE: Range = next_range::<U256>(0..0);
+const RECEIPT_ID_RANGE: Range = next_range::<ReceiptId>(FEE_RANGE);
 const SIGNATURE_RANGE: Range = next_range::<Signature>(RECEIPT_ID_RANGE);
 const SIZE: usize = SIGNATURE_RANGE.end; // 112 bytes, last I checked.
 
 pub struct Voucher {
     pub allocation_id: Address,
-    pub amount: U256,
+    pub fees: U256,
     pub signature: Signature,
 }
 
@@ -46,7 +46,7 @@ pub struct Voucher {
 // This payload size is concerning, so it may be useful to allow for this to be
 // broken up and aggregated in chunks. For example, submit 20k receipts at a time
 // at 2.1MiB per request and get back a signed message that includes
-// (min_receipt_id, amount). By including the min_receipt_id we can still enforce
+// (allocation_id, min_receipt_id, fee). By including the min_receipt_id we can still enforce
 // uniqueness and roll this up incrementally.
 // Alternatively we could support reading data from a stream. But, most APIs these
 // days make that difficult.
@@ -74,7 +74,7 @@ pub fn receipts_to_voucher(
     let mut prev_receipt_id: ReceiptId = ReceiptId::default();
 
     // Keep track of value unlocked for signing voucher.
-    let mut total = U256::zero();
+    let mut fees = U256::zero();
 
     // Iterate over each receipt
     for chunk in data.chunks_exact(SIZE) {
@@ -97,7 +97,7 @@ pub fn receipts_to_voucher(
         // This also de-duplicates it in the message.
         let mut hasher = Keccak::v256();
         hasher.update(allocation_id);
-        hasher.update(&chunk[PAYMENT_AMOUNT_RANGE.start..RECEIPT_ID_RANGE.end]);
+        hasher.update(&chunk[FEE_RANGE.start..RECEIPT_ID_RANGE.end]);
         let mut message = Bytes32::default();
         hasher.finalize(&mut message);
 
@@ -107,24 +107,24 @@ pub fn receipts_to_voucher(
             .verify(&message, &signature, allocation_signer)
             .map_err(|_| VoucherError::InvalidSignature)?;
 
-        let this_amount = U256::from_big_endian(&chunk[PAYMENT_AMOUNT_RANGE]);
+        let fee = U256::from_big_endian(&chunk[FEE_RANGE]);
 
-        total = total.saturating_add(this_amount);
+        fees = fees.saturating_add(fee);
     }
 
     // The contract will revert if this is 0
-    if total == U256::zero() {
+    if fees == U256::zero() {
         return Err(VoucherError::NoValue);
     }
 
     let mut message = Vec::new();
     message.extend_from_slice(allocation_id);
-    message.extend_from_slice(&to_be_bytes(total));
+    message.extend_from_slice(&to_be_bytes(fees));
     let signature = sign(&message, voucher_signer);
 
     Ok(Voucher {
         allocation_id: *allocation_id,
-        amount: total,
+        fees,
         signature,
     })
 }
@@ -141,7 +141,7 @@ impl IntoHandle for Voucher {
     fn into_handle<'c>(&self, cx: &mut impl Context<'c>) -> SafeJsResult<'c, Self::Handle> {
         js_object!(cx => {
             allocation: &self.allocation_id,
-            amount: &self.amount,
+            amount: &self.fees,
             signature: &self.signature.to_vec(),
         })
     }

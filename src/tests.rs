@@ -44,7 +44,7 @@ pub fn test_signer() -> SecretKey {
 }
 
 #[test]
-#[ignore = "This panics to output the result time. Should use a proper benchmarking lib."]
+#[ignore = "Benchmark"]
 fn speed() {
     let mut pool = ReceiptPool::new();
     pool.add_allocation(test_signer(), bytes(0));
@@ -66,7 +66,7 @@ fn speed() {
 
     let end = Instant::now();
 
-    panic!("{:?}", end - start);
+    dbg!("{:?}", end - start);
 }
 
 #[test]
@@ -78,15 +78,15 @@ fn vouchers() {
     pool.add_allocation(test_signer(), allocation_id);
     let mut borrows = Vec::<Vec<u8>>::new();
 
-    let mut total = U256::zero();
+    let mut fees = U256::zero();
     for i in 2..10 {
         for borrow in borrows.drain(..) {
             pool.release(&borrow, QueryStatus::Success);
         }
         for _ in 0..i {
-            let amount = U256::from(1);
-            total += amount;
-            let commitment = pool.commit(amount).unwrap();
+            let fee = U256::from(1);
+            fees += fee;
+            let commitment = pool.commit(fee).unwrap();
             borrows.push(commitment);
         }
     }
@@ -113,7 +113,7 @@ fn vouchers() {
     .unwrap();
 
     assert_eq!(&voucher.allocation_id, &allocation_id);
-    assert_eq!(&voucher.amount, &total);
+    assert_eq!(&voucher.fees, &fees);
 }
 
 #[test]

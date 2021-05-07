@@ -6,11 +6,11 @@ use secp256k1::SecretKey;
 // I'm really happy with how this turned out to make book-keeping easier.
 // A macro might make this better though.
 const ALLOCATION_ID_RANGE: Range = next_range::<Address>(0..0);
-const PAYMENT_AMOUNT_RANGE: Range = next_range::<U256>(ALLOCATION_ID_RANGE);
-const RECEIPT_ID_RANGE: Range = next_range::<ReceiptId>(PAYMENT_AMOUNT_RANGE);
+const FEE_RANGE: Range = next_range::<U256>(ALLOCATION_ID_RANGE);
+const RECEIPT_ID_RANGE: Range = next_range::<ReceiptId>(FEE_RANGE);
 const SIGNATURE_RANGE: Range = next_range::<Signature>(RECEIPT_ID_RANGE);
-const UNLOCKED_PAYMENT_RANGE: Range = next_range::<U256>(SIGNATURE_RANGE);
-pub const BORROWED_RECEIPT_LEN: usize = UNLOCKED_PAYMENT_RANGE.end;
+const UNLOCKED_FEE_RANGE: Range = next_range::<U256>(SIGNATURE_RANGE);
+pub const BORROWED_RECEIPT_LEN: usize = UNLOCKED_FEE_RANGE.end;
 
 /// A collection of installed allocation that can borrow or generate receipts.
 #[derive(Default, Debug, PartialEq, Eq)]
@@ -41,7 +41,7 @@ pub enum QueryStatus {
 
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub struct PooledReceipt {
-    pub unlocked_payment: U256,
+    pub unlocked_fee: U256,
     pub receipt_id: ReceiptId,
 }
 
@@ -59,17 +59,17 @@ impl ReceiptPool {
 
     /// This is only a minimum bound, and doesn't count
     /// outstanding/forgotten receipts which may have account for a
-    /// large amount of unlocked payments
+    /// significant portion of unlocked fees
     #[cfg(test)]
-    pub fn known_unlocked_payments(&self) -> U256 {
+    pub fn known_unlocked_fees(&self) -> U256 {
         let mut result = U256::zero();
-        for payment in self
+        for fee in self
             .allocations
             .iter()
             .flat_map(|a| &a.receipt_cache)
-            .map(|r| r.unlocked_payment)
+            .map(|r| r.unlocked_fee)
         {
-            result += payment;
+            result += fee;
         }
         result
     }
@@ -115,7 +115,7 @@ impl ReceiptPool {
             .find(|a| &a.allocation_id == allocation_id)
     }
 
-    pub fn commit(&mut self, locked_payment: U256) -> Result<Vec<u8>, BorrowFail> {
+    pub fn commit(&mut self, locked_fee: U256) -> Result<Vec<u8>, BorrowFail> {
         let allocation = self.select_allocation()?;
 
         let receipt = if allocation.receipt_cache.len() == 0 {
@@ -123,7 +123,7 @@ impl ReceiptPool {
             rng().fill_bytes(&mut receipt_id);
             PooledReceipt {
                 receipt_id,
-                unlocked_payment: U256::zero(),
+                unlocked_fee: U256::zero(),
             }
         } else {
             let receipts = &mut allocation.receipt_cache;
@@ -136,11 +136,11 @@ impl ReceiptPool {
         // it would be possible to split out the remainder of this method.
 
         // Write the data in the official receipt that gets sent over the wire.
-        // This is: [allocation_id, payment_amount, receipt_id, signature]
+        // This is: [allocation_id, fee, receipt_id, signature]
         let mut commitment = Vec::with_capacity(BORROWED_RECEIPT_LEN);
-        let payment_amount = receipt.unlocked_payment + locked_payment;
+        let fee = receipt.unlocked_fee + locked_fee;
         commitment.extend_from_slice(&allocation.allocation_id);
-        commitment.extend_from_slice(&to_be_bytes(payment_amount));
+        commitment.extend_from_slice(&to_be_bytes(fee));
         commitment.extend_from_slice(&receipt.receipt_id);
 
         // Engineering in any kind of replay protection like as afforded by EIP-712 is
@@ -149,16 +149,16 @@ impl ReceiptPool {
         // not sign any messages that are not for the app. Since there are no other structs
         // to sign, there are no possible collisions.
         //
-        // The part of the message that needs to be signed in the payment amount and receipt id only.
+        // The part of the message that needs to be signed in the fee and receipt id only.
         let signature = sign(
             &commitment[ALLOCATION_ID_RANGE.start..RECEIPT_ID_RANGE.end],
             &allocation.signer,
         );
         commitment.extend_from_slice(&signature);
 
-        // Extend with the unlocked payment, which is necessary to return collateral
+        // Extend with the unlocked fee, which is necessary to return collateral
         // in the case of failure.
-        commitment.extend_from_slice(&to_be_bytes(receipt.unlocked_payment));
+        commitment.extend_from_slice(&to_be_bytes(receipt.unlocked_fee));
 
         debug_assert_eq!(BORROWED_RECEIPT_LEN, commitment.len());
 
@@ -177,14 +177,14 @@ impl ReceiptPool {
             return;
         };
 
-        let unlocked_payment = if status == QueryStatus::Success {
-            U256::from_big_endian(&bytes[PAYMENT_AMOUNT_RANGE])
+        let unlocked_fee = if status == QueryStatus::Success {
+            U256::from_big_endian(&bytes[FEE_RANGE])
         } else {
-            U256::from_big_endian(&bytes[UNLOCKED_PAYMENT_RANGE])
+            U256::from_big_endian(&bytes[UNLOCKED_FEE_RANGE])
         };
 
         let receipt = PooledReceipt {
-            unlocked_payment,
+            unlocked_fee,
             receipt_id: bytes[RECEIPT_ID_RANGE].try_into().unwrap(),
         };
         allocation.receipt_cache.push(receipt);
@@ -197,14 +197,14 @@ mod tests {
     use crate::tests::*;
 
     #[track_caller]
-    fn assert_failed_borrow(pool: &mut ReceiptPool, amount: impl Into<U256>) {
-        let receipt = pool.commit(amount.into());
+    fn assert_failed_borrow(pool: &mut ReceiptPool, fee: impl Into<U256>) {
+        let receipt = pool.commit(fee.into());
         assert_eq!(receipt, Err(BorrowFail::NoAllocation));
     }
 
     #[track_caller]
-    fn assert_successful_borrow(pool: &mut ReceiptPool, amount: impl Into<U256>) -> Vec<u8> {
-        pool.commit(U256::from(amount.into()))
+    fn assert_successful_borrow(pool: &mut ReceiptPool, fee: impl Into<U256>) -> Vec<u8> {
+        pool.commit(U256::from(fee.into()))
             .expect("Should be able to borrow")
     }
 
@@ -217,9 +217,9 @@ mod tests {
         for i in 1..=10 {
             let borrow = assert_successful_borrow(&mut pool, i);
             pool.release(&borrow, QueryStatus::Success);
-            // Verify that we have unlocked all the payments
+            // Verify that we have unlocked all the fees
             let unlocked: u32 = (0..=i).sum();
-            assert_eq!(U256::from(unlocked), pool.known_unlocked_payments());
+            assert_eq!(U256::from(unlocked), pool.known_unlocked_fees());
         }
     }
 
@@ -267,21 +267,21 @@ mod tests {
         pool.add_allocation(test_signer(), bytes(2));
 
         let borrow3 = assert_successful_borrow(&mut pool, 3);
-        assert_eq!(pool.known_unlocked_payments(), 0.into());
+        assert_eq!(pool.known_unlocked_fees(), 0.into());
 
         let borrow2 = assert_successful_borrow(&mut pool, 2);
-        assert_eq!(pool.known_unlocked_payments(), 0.into());
+        assert_eq!(pool.known_unlocked_fees(), 0.into());
 
         pool.release(&borrow3, QueryStatus::Failure);
-        assert_eq!(pool.known_unlocked_payments(), 0.into());
+        assert_eq!(pool.known_unlocked_fees(), 0.into());
 
         let borrow4 = assert_successful_borrow(&mut pool, 4);
-        assert_eq!(pool.known_unlocked_payments(), 0.into());
+        assert_eq!(pool.known_unlocked_fees(), 0.into());
 
         pool.release(&borrow2, QueryStatus::Success);
-        assert_eq!(pool.known_unlocked_payments(), 2.into());
+        assert_eq!(pool.known_unlocked_fees(), 2.into());
 
         pool.release(&borrow4, QueryStatus::Unknown);
-        assert_eq!(pool.known_unlocked_payments(), 2.into());
+        assert_eq!(pool.known_unlocked_fees(), 2.into());
     }
 }
