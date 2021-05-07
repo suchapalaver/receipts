@@ -12,7 +12,8 @@ secp256k1 = { version="0.20", features=["recovery"] }
 lazy_static = "1.4.0"
 tiny-keccak = { version="2", features = ["keccak"] }
 receipts-transfer = { package="receipts", git = "ssh://git@github.com/edgeandnode/receipts.git", rev = "f4b756f" }
-
+native-utils = { git = "ssh://git@github.com/edgeandnode/native-utils.git", rev = "d17e60c" }
+neon = "0.8"
 
 # This doesn't depend on byteorder directly,
 # but if this is left out then the dependency through

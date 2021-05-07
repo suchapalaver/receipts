@@ -1,4 +1,10 @@
 use crate::prelude::*;
+use native_utils::{
+    errors::{IntoError, SafeJsResult},
+    js_object,
+    marshalling::IntoHandle,
+};
+use neon::prelude::*;
 use secp256k1::{Message, PublicKey, SecretKey};
 use std::fmt;
 use tiny_keccak::{Hasher, Keccak};
@@ -121,4 +127,22 @@ pub fn receipts_to_voucher(
         amount: total,
         signature,
     })
+}
+
+impl IntoError for VoucherError {
+    fn into_error<'c>(&self, cx: &mut impl Context<'c>) -> JsResult<'c, JsError> {
+        let display = format!("{}", self);
+        display.into_error(cx)
+    }
+}
+
+impl IntoHandle for Voucher {
+    type Handle = JsObject;
+    fn into_handle<'c>(&self, cx: &mut impl Context<'c>) -> SafeJsResult<'c, Self::Handle> {
+        js_object!(cx => {
+            allocation: &self.allocation_id,
+            amount: &self.amount,
+            signature: &self.signature.to_vec(),
+        })
+    }
 }
