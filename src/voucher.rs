@@ -1,10 +1,10 @@
 use crate::prelude::*;
-use native_utils::{
+use neon::prelude::*;
+use neon_utils::{
     errors::{IntoError, SafeJsResult},
     js_object,
     marshalling::IntoHandle,
 };
-use neon::prelude::*;
 use secp256k1::{Message, PublicKey, SecretKey};
 use std::fmt;
 use tiny_keccak::{Hasher, Keccak};
