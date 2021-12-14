@@ -1,19 +1,18 @@
 [package]
-name = "receipts"
-version = "0.1.0"
 authors = ["Zac Burns <That3Percent@gmail.com>"]
 edition = "2018"
-
+name = "receipts"
+version = "0.1.0"
 
 [dependencies]
+lazy_static = "1.4.0"
+neon = { version = "0.9", optional = true }
+neon-utils = { git = "https://github.com/edgeandnode/neon-utils", rev = "2507d4f", optional = true }
 primitive-types = "0.8"
 rand = "0.8"
-secp256k1 = { version="0.20", features=["recovery"] }
-lazy_static = "1.4.0"
-tiny-keccak = { version="2", features = ["keccak"] }
-receipts-transfer = { package="receipts", git = "ssh://git@github.com/edgeandnode/receipts.git", rev = "f4b756f" }
-neon-utils = "1.1"
-neon = "0.8"
+receipts-transfer = { package = "receipts", git = "ssh://git@github.com/edgeandnode/receipts.git", rev = "f4b756f" }
+secp256k1 = { version = "0.20", features = ["recovery"] }
+tiny-keccak = { version = "2", features = ["keccak"] }
 
 # This doesn't depend on byteorder directly,
 # but if this is left out then the dependency through
@@ -27,6 +26,8 @@ neon = "0.8"
 # the dependency conflict. Only this exact specification will do.
 byteorder = "=1.3.4"
 
-
 [dev-dependencies]
 rustc-hex = "2"
+
+[features]
+use-neon = ["neon-utils", "neon"]

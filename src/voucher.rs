@@ -1,10 +1,4 @@
 use crate::prelude::*;
-use neon::prelude::*;
-use neon_utils::{
-    errors::{IntoError, SafeJsResult},
-    js_object,
-    marshalling::IntoHandle,
-};
 use secp256k1::{Message, PublicKey, SecretKey};
 use std::fmt;
 use tiny_keccak::{Hasher, Keccak};
@@ -129,6 +123,16 @@ pub fn receipts_to_voucher(
     })
 }
 
+#[cfg(feature = "use-neon")]
+use neon::prelude::*;
+#[cfg(feature = "use-neon")]
+use neon_utils::{
+    errors::{IntoError, SafeJsResult},
+    js_object,
+    marshalling::IntoHandle,
+};
+
+#[cfg(feature = "use-neon")]
 impl IntoError for VoucherError {
     fn into_error<'c>(&self, cx: &mut impl Context<'c>) -> JsResult<'c, JsError> {
         let display = format!("{}", self);
@@ -136,6 +140,7 @@ impl IntoError for VoucherError {
     }
 }
 
+#[cfg(feature = "use-neon")]
 impl IntoHandle for Voucher {
     type Handle = JsObject;
     fn into_handle<'c>(&self, cx: &mut impl Context<'c>) -> SafeJsResult<'c, Self::Handle> {
