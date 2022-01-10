@@ -77,7 +77,6 @@ fn vouchers() {
     let mut pool = ReceiptPool::new();
     pool.add_allocation(test_signer(), allocation_id);
     let mut borrows = Vec::<Vec<u8>>::new();
-
     let mut fees = U256::zero();
     for i in 2..10 {
         for borrow in borrows.drain(..) {
@@ -90,16 +89,7 @@ fn vouchers() {
             borrows.push(commitment);
         }
     }
-
-    let mut receipts = Vec::with_capacity(112 * borrows.len());
-
-    // Sort by receipt id
-    borrows.sort_by_key(|b| ReceiptId::try_from(&b[52..67]).unwrap());
-
-    // Serialize
-    for borrow in borrows.iter() {
-        receipts.extend_from_slice(&borrow[20..132]);
-    }
+    let receipts = receipts_from_borrows(borrows);
 
     // Convert to voucher
     let allocation_signer = PublicKey::from_secret_key(&SECP256K1, &test_signer());
@@ -120,26 +110,7 @@ fn vouchers() {
 #[ignore = "Benchmark"]
 fn vouchers_speed() {
     let allocation_id = bytes(1);
-
-    // Create a bunch of receipts
-    let mut pool = ReceiptPool::new();
-    pool.add_allocation(test_signer(), allocation_id);
-    let mut borrows = Vec::<Vec<u8>>::new();
-
-    for _ in 1..100000 {
-        let commitment = pool.commit(U256::from(1)).unwrap();
-        borrows.push(commitment);
-    }
-
-    let mut receipts = Vec::with_capacity(112 * borrows.len());
-
-    // Sort by receipt id
-    borrows.sort_by_key(|b| ReceiptId::try_from(&b[52..67]).unwrap());
-
-    // Serialize
-    for borrow in borrows.iter() {
-        receipts.extend_from_slice(&borrow[20..132]);
-    }
+    let receipts = create_receipts(allocation_id, 100000);
 
     // Convert to voucher
     let allocation_signer = PublicKey::from_secret_key(&SECP256K1, &test_signer());
@@ -156,4 +127,61 @@ fn vouchers_speed() {
     let end = Instant::now();
 
     dbg!(end - start);
+}
+
+#[test]
+fn partial_vouchers_combine() {
+    let allocation_id = bytes(1);
+    let allocation_signer = PublicKey::from_secret_key(&SECP256K1, &test_signer());
+
+    let create_partial_voucher = |receipts: &[u8]| -> PartialVoucher {
+        receipts_to_partial_voucher(&allocation_id, &allocation_signer, &test_signer(), receipts)
+            .unwrap()
+    };
+
+    let mut rng = rand::thread_rng();
+    let receipt_count = rng.gen_range(2..=1000);
+    let receipts = create_receipts(allocation_id, receipt_count);
+
+    let batch_size = rng.gen_range(0..receipt_count);
+    println!(
+        "receipt_count: {}, batch_size: {}",
+        receipt_count, batch_size,
+    );
+    let partial_vouchers: Vec<PartialVoucher> = receipts
+        .chunks(112 * batch_size)
+        .map(|receipts| create_partial_voucher(receipts))
+        .collect();
+    let oneshot_receipt = receipts_to_voucher(
+        &allocation_id,
+        &allocation_signer,
+        &test_signer(),
+        &receipts,
+    )
+    .unwrap();
+    let combined_voucher =
+        combine_partial_vouchers(&allocation_id, &test_signer(), &partial_vouchers).unwrap();
+    assert_eq!(oneshot_receipt, combined_voucher);
+}
+
+fn create_receipts(allocation_id: Address, count: usize) -> Vec<u8> {
+    let mut pool = ReceiptPool::new();
+    pool.add_allocation(test_signer(), allocation_id);
+    let mut borrows = Vec::<Vec<u8>>::new();
+    for _ in 1..=count {
+        let commitment = pool.commit(U256::from(1)).unwrap();
+        borrows.push(commitment);
+    }
+    receipts_from_borrows(borrows)
+}
+
+fn receipts_from_borrows(mut borrows: Vec<Vec<u8>>) -> Vec<u8> {
+    let mut receipts = Vec::with_capacity(112 * borrows.len());
+    // Sort by receipt id
+    borrows.sort_by_key(|b| ReceiptId::try_from(&b[52..67]).unwrap());
+    // Serialize
+    for borrow in borrows {
+        receipts.extend_from_slice(&borrow[20..132]);
+    }
+    receipts
 }
