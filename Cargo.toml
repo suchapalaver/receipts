@@ -13,6 +13,7 @@ rand = "0.8"
 receipts-transfer = { package = "receipts", git = "ssh://git@github.com/edgeandnode/receipts.git", rev = "f4b756f" }
 secp256k1 = { version = "0.20", features = ["recovery"] }
 tiny-keccak = { version = "2", features = ["keccak"] }
+itertools = "0.10"
 
 # This doesn't depend on byteorder directly,
 # but if this is left out then the dependency through

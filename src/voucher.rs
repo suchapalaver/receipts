@@ -1,4 +1,5 @@
 use crate::prelude::*;
+use itertools::Itertools as _;
 use secp256k1::{Message, PublicKey, SecretKey};
 use std::fmt;
 use tiny_keccak::{Hasher, Keccak};
@@ -8,6 +9,7 @@ pub enum VoucherError {
     InvalidData,
     InvalidSignature,
     UnorderedReceipts,
+    UnorderedPartialVouchers,
     NoValue,
 }
 
@@ -19,6 +21,7 @@ impl fmt::Display for VoucherError {
             Self::InvalidData => write!(f, "Invalid receipts data"),
             Self::InvalidSignature => write!(f, "Receipts are not signed for the given allocation"),
             Self::UnorderedReceipts => write!(f, "Unordered receipts"),
+            Self::UnorderedPartialVouchers => write!(f, "Unordered partial vouchers"),
             Self::NoValue => write!(f, "Receipts have no value"),
         }
     }
@@ -134,12 +137,12 @@ fn verify_receipts(
 ) -> Result<U256, VoucherError> {
     // Verify the receipts are sorted and ascending.
     // This also verifies their uniqueness.
-    let mut prev_receipt_id = ReceiptId::default();
-    for receipt_id in Receipts::new(data)?.map(|receipt| *receipt.id) {
-        if !(prev_receipt_id < receipt_id) {
-            return Err(VoucherError::UnorderedReceipts);
-        }
-        prev_receipt_id = receipt_id;
+    if Receipts::new(data)?
+        .map(|receipt| *receipt.id)
+        .tuple_windows()
+        .any(|(a, b)| !(a < b))
+    {
+        return Err(VoucherError::UnorderedReceipts);
     }
 
     // Verify signatures
@@ -181,12 +184,20 @@ pub fn combine_partial_vouchers(
         return Err(VoucherError::NoValue);
     }
 
-    let fees = partial_vouchers
+    // Check that receipt ID ranges are ordered and non-overlapping.
+    // This is done by checking that for a sliding window of range limits:
+    //   forall (a0, a1), (b0, b1): a0 < a1 < b0 < b1
+    if !partial_vouchers
         .iter()
-        .map(|pv| pv.voucher.fees)
-        .fold(U256::zero(), |sum, fees| sum.saturating_add(fees));
-    let partial_voucher_signer = PublicKey::from_secret_key(&SECP256K1, &voucher_signer);
+        .flat_map(|pv| [pv.receipt_id_min, pv.receipt_id_max])
+        .tuple_windows()
+        .all(|(a, b)| (a < b))
+    {
+        return Err(VoucherError::UnorderedPartialVouchers);
+    }
+
     // Verify signatures
+    let partial_voucher_signer = PublicKey::from_secret_key(&SECP256K1, &voucher_signer);
     for partial_voucher in partial_vouchers {
         let mut hasher = Keccak::v256();
         hasher.update(allocation_id);
@@ -204,6 +215,15 @@ pub fn combine_partial_vouchers(
             .verify(&message, &signature, &partial_voucher_signer)
             .map_err(|_| VoucherError::InvalidSignature)?;
     }
+
+    let fees = partial_vouchers
+        .iter()
+        .map(|pv| pv.voucher.fees)
+        .fold(U256::zero(), |sum, fees| sum.saturating_add(fees));
+    if fees == U256::zero() {
+        return Err(VoucherError::NoValue);
+    }
+
     // Create signature for complete voucher
     let mut message = Vec::new();
     message.extend_from_slice(allocation_id);
