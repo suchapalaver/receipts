@@ -191,7 +191,7 @@ pub fn combine_partial_vouchers(
         .iter()
         .flat_map(|pv| [pv.receipt_id_min, pv.receipt_id_max])
         .tuple_windows()
-        .all(|(a, b)| (a < b))
+        .all(|(a, b)| a < b)
     {
         return Err(VoucherError::UnorderedPartialVouchers);
     }

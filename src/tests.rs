@@ -143,7 +143,7 @@ fn partial_vouchers_combine() {
     let receipt_count = rng.gen_range(2..=1000);
     let receipts = create_receipts(allocation_id, receipt_count);
 
-    let batch_size = rng.gen_range(0..receipt_count);
+    let batch_size = rng.gen_range(1..receipt_count);
     println!(
         "receipt_count: {}, batch_size: {}",
         receipt_count, batch_size,
@@ -161,6 +161,8 @@ fn partial_vouchers_combine() {
     .unwrap();
     let combined_voucher =
         combine_partial_vouchers(&allocation_id, &test_signer(), &partial_vouchers).unwrap();
+    // Warning: This is relying on an ECDSA implementation compatible with RFC 6979
+    // (deterministic usage of signatures).
     assert_eq!(oneshot_receipt, combined_voucher);
 }
 
