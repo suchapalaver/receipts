@@ -4,7 +4,7 @@ use secp256k1::{Message, PublicKey, SecretKey};
 use std::fmt;
 use tiny_keccak::{Hasher, Keccak};
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum VoucherError {
     InvalidData,
     InvalidSignature,
@@ -68,13 +68,14 @@ impl<'r> Iterator for Receipts<'r> {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Voucher {
     pub allocation_id: Address,
     pub fees: U256,
     pub signature: Signature,
 }
 
+#[derive(Clone)]
 pub struct PartialVoucher {
     pub voucher: Voucher,
     pub receipt_id_min: ReceiptId,

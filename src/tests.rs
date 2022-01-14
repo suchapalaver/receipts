@@ -70,6 +70,44 @@ fn speed() {
 }
 
 #[test]
+fn attempt_to_double_collect_with_partial_voucher_rejects() {
+    let allocation_id = bytes(1);
+
+    // Create a bunch of receipts
+    let mut pool = ReceiptPool::new();
+    pool.add_allocation(test_signer(), allocation_id);
+    let mut borrows = Vec::<Vec<u8>>::new();
+    for _ in 0..10 {
+        let fee = U256::from(1);
+        let commitment = pool.commit(fee).unwrap();
+        borrows.push(commitment);
+    }
+
+    let to_partial = |b| {
+        let receipts = receipts_from_borrows(b);
+        receipts_to_partial_voucher(
+            &allocation_id,
+            &PublicKey::from_secret_key(&SECP256K1, &test_signer()),
+            &test_signer(),
+            &receipts,
+        )
+        .unwrap()
+    };
+
+    let partial_1 = to_partial((&borrows[5..]).to_vec());
+    let partial_2 = to_partial((&borrows[..5]).to_vec());
+
+    for ordering in [
+        vec![partial_1.clone(), partial_2.clone()],
+        vec![partial_2.clone(), partial_1.clone()],
+        vec![partial_1.clone(), partial_1.clone()],
+    ] {
+        let err = combine_partial_vouchers(&allocation_id, &test_signer(), &ordering);
+        assert_eq!(err, Err(VoucherError::UnorderedPartialVouchers));
+    }
+}
+
+#[test]
 fn vouchers() {
     let allocation_id = bytes(1);
 
