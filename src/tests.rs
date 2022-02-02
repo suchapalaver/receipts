@@ -168,6 +168,33 @@ fn vouchers_speed() {
 }
 
 #[test]
+fn partial_vouchers_combine_single() {
+    let allocation_id = bytes(1);
+    let allocation_signer = PublicKey::from_secret_key(&SECP256K1, &test_signer());
+
+    let receipts = create_receipts(allocation_id, 1);
+    let partial_voucher = receipts_to_partial_voucher(
+        &allocation_id,
+        &allocation_signer,
+        &test_signer(),
+        &receipts,
+    )
+    .unwrap();
+    let oneshot_receipt = receipts_to_voucher(
+        &allocation_id,
+        &allocation_signer,
+        &test_signer(),
+        &receipts,
+    )
+    .unwrap();
+    let combined_voucher =
+        combine_partial_vouchers(&allocation_id, &test_signer(), &[partial_voucher]).unwrap();
+    // Warning: This is relying on an ECDSA implementation compatible with RFC 6979
+    // (deterministic usage of signatures).
+    assert_eq!(oneshot_receipt, combined_voucher);
+}
+
+#[test]
 fn partial_vouchers_combine() {
     let allocation_id = bytes(1);
     let allocation_signer = PublicKey::from_secret_key(&SECP256K1, &test_signer());

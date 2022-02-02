@@ -185,14 +185,18 @@ pub fn combine_partial_vouchers(
         return Err(VoucherError::NoValue);
     }
 
-    // Check that receipt ID ranges are ordered and non-overlapping.
-    // This is done by checking that for a sliding window of range limits:
-    //   forall (a0, a1), (b0, b1): a0 < a1 < b0 < b1
+    // All partial voucher ID range bounds are ordered.
     if !partial_vouchers
         .iter()
-        .flat_map(|pv| [pv.receipt_id_min, pv.receipt_id_max])
+        .all(|pv| pv.receipt_id_min <= pv.receipt_id_max)
+    {
+        return Err(VoucherError::UnorderedPartialVouchers);
+    }
+    // All partial voucher ID ranges are non-overlapping.
+    if !partial_vouchers
+        .iter()
         .tuple_windows()
-        .all(|(a, b)| a < b)
+        .all(|(a, b)| a.receipt_id_max < b.receipt_id_min)
     {
         return Err(VoucherError::UnorderedPartialVouchers);
     }
