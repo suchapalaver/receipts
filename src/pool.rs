@@ -109,6 +109,12 @@ impl ReceiptPool {
         self.allocations.last_mut().ok_or(BorrowFail::NoAllocation)
     }
 
+    pub fn contains_allocation(&self, allocation_id: &Address) -> bool {
+        self.allocations
+            .iter()
+            .any(|a| &a.allocation_id == allocation_id)
+    }
+
     fn allocation_by_id_mut(&mut self, allocation_id: &Address) -> Option<&mut Allocation> {
         self.allocations
             .iter_mut()
