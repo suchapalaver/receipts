@@ -115,6 +115,10 @@ impl ReceiptPool {
             .any(|a| &a.allocation_id == allocation_id)
     }
 
+    pub fn addresses(&self) -> Vec<Address> {
+        self.allocations.iter().map(|a| a.allocation_id).collect()
+    }
+
     fn allocation_by_id_mut(&mut self, allocation_id: &Address) -> Option<&mut Allocation> {
         self.allocations
             .iter_mut()
