@@ -1,12 +1,11 @@
-use crate::pool::*;
 use crate::prelude::*;
-use secp256k1::SecretKey;
+use crate::*;
+use secp256k1::{PublicKey, SecretKey};
+use std::convert::TryFrom;
 use std::time::Instant;
 
-pub fn bytes32(id: u8) -> Bytes32 {
-    let mut result = Bytes32::default();
-    result[0] = id;
-    result
+pub fn bytes<const N: usize>(id: u8) -> [u8; N] {
+    [id; N]
 }
 
 fn debug_hex(bytes: &[u8]) {
@@ -21,18 +20,15 @@ pub fn make_receipt() {
     let mut pool = ReceiptPool::new();
     let signer = test_signer();
 
-    let mut transfer_id = Bytes32::default();
-    transfer_id[0] = 100;
-    let collateral = U256::from(200);
-    pool.add_transfer(signer, collateral, transfer_id);
+    pool.add_allocation(signer, bytes(100));
 
     println!("Receipt 0: value 5");
     let commit0 = pool.commit(U256::from(5)).unwrap();
-    debug_hex(&commit0.commitment);
+    debug_hex(&commit0);
 
     println!("Receipt 1: value 8");
     let commit1 = pool.commit(U256::from(8)).unwrap();
-    debug_hex(&commit1.commitment);
+    debug_hex(&commit1);
 }
 
 pub fn test_signer() -> SecretKey {
@@ -48,11 +44,11 @@ pub fn test_signer() -> SecretKey {
 }
 
 #[test]
-#[ignore = "This panics to output the result time. Should use a proper benchmarking lib."]
+#[ignore = "Benchmark"]
 fn speed() {
     let mut pool = ReceiptPool::new();
-    pool.add_transfer(test_signer(), U256::from(10000), bytes32(0));
-    pool.add_transfer(test_signer(), U256::from(1000000000), bytes32(1));
+    pool.add_allocation(test_signer(), bytes(0));
+    pool.add_allocation(test_signer(), bytes(1));
 
     let mut borrows = Vec::<Vec<u8>>::new();
 
@@ -60,7 +56,7 @@ fn speed() {
 
     for _ in 0..2700 {
         for _ in 0..10 {
-            let commitment = pool.commit(U256::from(100)).unwrap().commitment;
+            let commitment = pool.commit(U256::from(100)).unwrap();
             borrows.push(commitment)
         }
         while let Some(borrow) = borrows.pop() {
@@ -70,5 +66,189 @@ fn speed() {
 
     let end = Instant::now();
 
-    panic!("{:?}", end - start);
+    dbg!("{:?}", end - start);
+}
+
+#[test]
+fn attempt_to_double_collect_with_partial_voucher_rejects() {
+    let allocation_id = bytes(1);
+
+    // Create a bunch of receipts
+    let mut pool = ReceiptPool::new();
+    pool.add_allocation(test_signer(), allocation_id);
+    let mut borrows = Vec::<Vec<u8>>::new();
+    for _ in 0..10 {
+        let fee = U256::from(1);
+        let commitment = pool.commit(fee).unwrap();
+        borrows.push(commitment);
+    }
+
+    let to_partial = |b| {
+        let receipts = receipts_from_borrows(b);
+        receipts_to_partial_voucher(
+            &allocation_id,
+            &PublicKey::from_secret_key(&SECP256K1, &test_signer()),
+            &test_signer(),
+            &receipts,
+        )
+        .unwrap()
+    };
+
+    let partial_1 = to_partial((&borrows[5..]).to_vec());
+    let partial_2 = to_partial((&borrows[..5]).to_vec());
+
+    for ordering in [
+        vec![partial_1.clone(), partial_2.clone()],
+        vec![partial_2.clone(), partial_1.clone()],
+        vec![partial_1.clone(), partial_1.clone()],
+    ] {
+        let err = combine_partial_vouchers(&allocation_id, &test_signer(), &ordering);
+        assert_eq!(err, Err(VoucherError::UnorderedPartialVouchers));
+    }
+}
+
+#[test]
+fn vouchers() {
+    let allocation_id = bytes(1);
+
+    // Create a bunch of receipts
+    let mut pool = ReceiptPool::new();
+    pool.add_allocation(test_signer(), allocation_id);
+    let mut borrows = Vec::<Vec<u8>>::new();
+    let mut fees = U256::zero();
+    for i in 2..10 {
+        for borrow in borrows.drain(..) {
+            pool.release(&borrow, QueryStatus::Success);
+        }
+        for _ in 0..i {
+            let fee = U256::from(1);
+            fees += fee;
+            let commitment = pool.commit(fee).unwrap();
+            borrows.push(commitment);
+        }
+    }
+    let receipts = receipts_from_borrows(borrows);
+
+    // Convert to voucher
+    let allocation_signer = PublicKey::from_secret_key(&SECP256K1, &test_signer());
+
+    let voucher = receipts_to_voucher(
+        &allocation_id,
+        &allocation_signer,
+        &test_signer(),
+        &receipts,
+    )
+    .unwrap();
+
+    assert_eq!(&voucher.allocation_id, &allocation_id);
+    assert_eq!(&voucher.fees, &fees);
+}
+
+#[test]
+#[ignore = "Benchmark"]
+fn vouchers_speed() {
+    let allocation_id = bytes(1);
+    let receipts = create_receipts(allocation_id, 100000);
+
+    // Convert to voucher
+    let allocation_signer = PublicKey::from_secret_key(&SECP256K1, &test_signer());
+
+    let start = Instant::now();
+    receipts_to_voucher(
+        &allocation_id,
+        &allocation_signer,
+        &test_signer(),
+        &receipts,
+    )
+    .unwrap();
+
+    let end = Instant::now();
+
+    dbg!(end - start);
+}
+
+#[test]
+fn partial_vouchers_combine_single() {
+    let allocation_id = bytes(1);
+    let allocation_signer = PublicKey::from_secret_key(&SECP256K1, &test_signer());
+
+    let receipts = create_receipts(allocation_id, 1);
+    let partial_voucher = receipts_to_partial_voucher(
+        &allocation_id,
+        &allocation_signer,
+        &test_signer(),
+        &receipts,
+    )
+    .unwrap();
+    let oneshot_receipt = receipts_to_voucher(
+        &allocation_id,
+        &allocation_signer,
+        &test_signer(),
+        &receipts,
+    )
+    .unwrap();
+    let combined_voucher =
+        combine_partial_vouchers(&allocation_id, &test_signer(), &[partial_voucher]).unwrap();
+    // Warning: This is relying on an ECDSA implementation compatible with RFC 6979
+    // (deterministic usage of signatures).
+    assert_eq!(oneshot_receipt, combined_voucher);
+}
+
+#[test]
+fn partial_vouchers_combine() {
+    let allocation_id = bytes(1);
+    let allocation_signer = PublicKey::from_secret_key(&SECP256K1, &test_signer());
+
+    let create_partial_voucher = |receipts: &[u8]| -> PartialVoucher {
+        receipts_to_partial_voucher(&allocation_id, &allocation_signer, &test_signer(), receipts)
+            .unwrap()
+    };
+
+    let mut rng = rand::thread_rng();
+    let receipt_count = rng.gen_range(2..=1000);
+    let receipts = create_receipts(allocation_id, receipt_count);
+
+    let batch_size = rng.gen_range(1..receipt_count);
+    println!(
+        "receipt_count: {}, batch_size: {}",
+        receipt_count, batch_size,
+    );
+    let partial_vouchers: Vec<PartialVoucher> = receipts
+        .chunks(112 * batch_size)
+        .map(|receipts| create_partial_voucher(receipts))
+        .collect();
+    let oneshot_receipt = receipts_to_voucher(
+        &allocation_id,
+        &allocation_signer,
+        &test_signer(),
+        &receipts,
+    )
+    .unwrap();
+    let combined_voucher =
+        combine_partial_vouchers(&allocation_id, &test_signer(), &partial_vouchers).unwrap();
+    // Warning: This is relying on an ECDSA implementation compatible with RFC 6979
+    // (deterministic usage of signatures).
+    assert_eq!(oneshot_receipt, combined_voucher);
+}
+
+fn create_receipts(allocation_id: Address, count: usize) -> Vec<u8> {
+    let mut pool = ReceiptPool::new();
+    pool.add_allocation(test_signer(), allocation_id);
+    let mut borrows = Vec::<Vec<u8>>::new();
+    for _ in 1..=count {
+        let commitment = pool.commit(U256::from(1)).unwrap();
+        borrows.push(commitment);
+    }
+    receipts_from_borrows(borrows)
+}
+
+fn receipts_from_borrows(mut borrows: Vec<Vec<u8>>) -> Vec<u8> {
+    let mut receipts = Vec::with_capacity(112 * borrows.len());
+    // Sort by receipt id
+    borrows.sort_by_key(|b| ReceiptId::try_from(&b[52..67]).unwrap());
+    // Serialize
+    for borrow in borrows {
+        receipts.extend_from_slice(&borrow[20..132]);
+    }
+    receipts
 }
