@@ -1,6 +1,6 @@
 use crate::prelude::*;
 use itertools::Itertools as _;
-use secp256k1::{Message, PublicKey, SecretKey};
+use secp256k1::{ecdsa, Message, PublicKey, SecretKey};
 use std::fmt;
 use tiny_keccak::{Hasher, Keccak};
 
@@ -159,10 +159,10 @@ fn verify_receipts(
         hasher.finalize(&mut message);
 
         let message = Message::from_slice(&message).unwrap();
-        let signature = secp256k1::Signature::from_compact(&receipt.signature[..64])
+        let signature = ecdsa::Signature::from_compact(&receipt.signature[..64])
             .map_err(|_| VoucherError::InvalidData)?;
         SECP256K1
-            .verify(&message, &signature, allocation_signer)
+            .verify_ecdsa(&message, &signature, allocation_signer)
             .map_err(|_| VoucherError::InvalidSignature)?;
     }
 
@@ -213,11 +213,10 @@ pub fn combine_partial_vouchers(
         hasher.finalize(&mut message);
 
         let message = Message::from_slice(&message).unwrap();
-        let signature =
-            secp256k1::Signature::from_compact(&partial_voucher.voucher.signature[..64])
-                .map_err(|_| VoucherError::InvalidData)?;
+        let signature = ecdsa::Signature::from_compact(&partial_voucher.voucher.signature[..64])
+            .map_err(|_| VoucherError::InvalidData)?;
         SECP256K1
-            .verify(&message, &signature, &partial_voucher_signer)
+            .verify_ecdsa(&message, &signature, &partial_voucher_signer)
             .map_err(|_| VoucherError::InvalidSignature)?;
     }
 

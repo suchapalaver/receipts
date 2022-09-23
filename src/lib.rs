@@ -1,4 +1,3 @@
-mod interop;
 mod pool;
 mod prelude;
 mod voucher;

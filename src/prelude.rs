@@ -43,7 +43,7 @@ pub fn to_be_bytes(value: U256) -> Bytes32 {
 pub fn sign(data: &[u8], signer: &SecretKey) -> Signature {
     let message = Message::from_slice(&hash_bytes(data)).unwrap();
 
-    let signature = SECP256K1.sign_recoverable(&message, signer);
+    let signature = SECP256K1.sign_ecdsa_recoverable(&message, signer);
     let (recovery_id, signature) = signature.serialize_compact();
     let recovery_id = match recovery_id.to_i32() {
         0 => 27,
