@@ -48,6 +48,15 @@ pub struct PooledReceipt {
 #[derive(Eq, PartialEq, Debug)]
 pub enum BorrowFail {
     NoAllocation,
+    InvalidRecoveryId,
+}
+
+impl From<SignError> for BorrowFail {
+    fn from(err: SignError) -> Self {
+        match err {
+            SignError::InvalidRecoveryId => Self::InvalidRecoveryId,
+        }
+    }
 }
 
 impl ReceiptPool {
@@ -163,7 +172,7 @@ impl ReceiptPool {
         let signature = sign(
             &commitment[ALLOCATION_ID_RANGE.start..RECEIPT_ID_RANGE.end],
             &allocation.signer,
-        );
+        )?;
         commitment.extend_from_slice(&signature);
 
         // Extend with the unlocked fee, which is necessary to return collateral

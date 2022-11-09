@@ -1,6 +1,6 @@
 use lazy_static::lazy_static;
 use secp256k1::{Message, Secp256k1, SecretKey};
-use std::mem::size_of;
+use std::{fmt, mem::size_of};
 pub use {
     primitive_types::U256,
     rand::{thread_rng as rng, Rng as _},
@@ -40,7 +40,18 @@ pub fn to_be_bytes(value: U256) -> Bytes32 {
     result
 }
 
-pub fn sign(data: &[u8], signer: &SecretKey) -> Signature {
+#[derive(Eq, PartialEq, Debug)]
+pub enum SignError {
+    InvalidRecoveryId,
+}
+
+impl fmt::Display for SignError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Invalid recovery ID")
+    }
+}
+
+pub fn sign(data: &[u8], signer: &SecretKey) -> Result<Signature, SignError> {
     let message = Message::from_slice(&hash_bytes(data)).unwrap();
 
     let signature = SECP256K1.sign_ecdsa_recoverable(&message, signer);
@@ -50,12 +61,12 @@ pub fn sign(data: &[u8], signer: &SecretKey) -> Signature {
         1 => 28,
         27 => 27,
         28 => 28,
-        _ => panic!("Invalid recovery id"),
+        _ => return Err(SignError::InvalidRecoveryId),
     };
 
     let mut serialized = [0; 65];
     (&mut serialized[..64]).copy_from_slice(&signature);
     serialized[64] = recovery_id;
 
-    serialized
+    Ok(serialized)
 }

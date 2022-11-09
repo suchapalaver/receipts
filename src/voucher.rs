@@ -11,6 +11,7 @@ pub enum VoucherError {
     UnorderedReceipts,
     UnorderedPartialVouchers,
     NoValue,
+    InvalidRecoveryId,
 }
 
 impl std::error::Error for VoucherError {}
@@ -23,6 +24,15 @@ impl fmt::Display for VoucherError {
             Self::UnorderedReceipts => write!(f, "Unordered receipts"),
             Self::UnorderedPartialVouchers => write!(f, "Unordered partial vouchers"),
             Self::NoValue => write!(f, "Receipts have no value"),
+            Self::InvalidRecoveryId => SignError::InvalidRecoveryId.fmt(f),
+        }
+    }
+}
+
+impl From<SignError> for VoucherError {
+    fn from(err: SignError) -> Self {
+        match err {
+            SignError::InvalidRecoveryId => Self::InvalidRecoveryId,
         }
     }
 }
@@ -102,7 +112,7 @@ pub fn receipts_to_voucher(
     Ok(Voucher {
         allocation_id: *allocation_id,
         fees,
-        signature: sign(&message, voucher_signer),
+        signature: sign(&message, voucher_signer)?,
     })
 }
 
@@ -124,7 +134,7 @@ pub fn receipts_to_partial_voucher(
         voucher: Voucher {
             allocation_id: *allocation_id,
             fees,
-            signature: sign(&message, voucher_signer),
+            signature: sign(&message, voucher_signer)?,
         },
         receipt_id_min,
         receipt_id_max,
@@ -232,7 +242,7 @@ pub fn combine_partial_vouchers(
     let mut message = Vec::new();
     message.extend_from_slice(allocation_id);
     message.extend_from_slice(&to_be_bytes(fees));
-    let signature = sign(&message, voucher_signer);
+    let signature = sign(&message, voucher_signer)?;
 
     Ok(Voucher {
         allocation_id: *allocation_id,
