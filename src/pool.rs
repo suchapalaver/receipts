@@ -1,6 +1,7 @@
 use crate::prelude::*;
 use rand::RngCore;
 use secp256k1::SecretKey;
+use std::fmt;
 
 // Keep track of the offsets to index the data in an array.
 // I'm really happy with how this turned out to make book-keeping easier.
@@ -49,6 +50,17 @@ pub struct PooledReceipt {
 pub enum BorrowFail {
     NoAllocation,
     InvalidRecoveryId,
+}
+
+impl std::error::Error for BorrowFail {}
+
+impl fmt::Display for BorrowFail {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoAllocation => write!(f, "No allocation"),
+            Self::InvalidRecoveryId => SignError::InvalidRecoveryId.fmt(f),
+        }
+    }
 }
 
 impl From<SignError> for BorrowFail {
