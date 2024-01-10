@@ -52,7 +52,7 @@ impl fmt::Display for SignError {
 }
 
 pub fn sign(data: &[u8], signer: &SecretKey) -> Result<Signature, SignError> {
-    let message = Message::from_slice(&hash_bytes(data)).unwrap();
+    let message = Message::from_digest_slice(&hash_bytes(data)).unwrap();
 
     let signature = SECP256K1.sign_ecdsa_recoverable(&message, signer);
     let (recovery_id, signature) = signature.serialize_compact();
