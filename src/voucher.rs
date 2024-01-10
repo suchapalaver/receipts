@@ -168,7 +168,7 @@ fn verify_receipts(
         let mut message = Bytes32::default();
         hasher.finalize(&mut message);
 
-        let message = Message::from_slice(&message).unwrap();
+        let message = Message::from_digest_slice(&message).unwrap();
         let signature = ecdsa::Signature::from_compact(&receipt.signature[..64])
             .map_err(|_| VoucherError::InvalidData)?;
         SECP256K1
@@ -222,7 +222,7 @@ pub fn combine_partial_vouchers(
         let mut message = Bytes32::default();
         hasher.finalize(&mut message);
 
-        let message = Message::from_slice(&message).unwrap();
+        let message = Message::from_digest_slice(&message).unwrap();
         let signature = ecdsa::Signature::from_compact(&partial_voucher.voucher.signature[..64])
             .map_err(|_| VoucherError::InvalidData)?;
         SECP256K1
