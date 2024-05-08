@@ -17,17 +17,14 @@ fn debug_hex(bytes: &[u8]) {
 // This is just useful for constructing a value to test with.
 #[test]
 pub fn make_receipt() {
-    let mut pool = ReceiptPool::new();
-    let signer = test_signer();
-
-    pool.add_allocation(signer, bytes(100));
+    let mut pool = ReceiptPool::new(bytes(100));
 
     println!("Receipt 0: value 5");
-    let commit0 = pool.commit(U256::from(5)).unwrap();
+    let commit0 = pool.commit(&test_signer(), U256::from(5)).unwrap();
     debug_hex(&commit0);
 
     println!("Receipt 1: value 8");
-    let commit1 = pool.commit(U256::from(8)).unwrap();
+    let commit1 = pool.commit(&test_signer(), U256::from(8)).unwrap();
     debug_hex(&commit1);
 }
 
@@ -46,9 +43,7 @@ pub fn test_signer() -> SecretKey {
 #[test]
 #[ignore = "Benchmark"]
 fn speed() {
-    let mut pool = ReceiptPool::new();
-    pool.add_allocation(test_signer(), bytes(0));
-    pool.add_allocation(test_signer(), bytes(1));
+    let mut pool = ReceiptPool::new(bytes(0));
 
     let mut borrows = Vec::<Vec<u8>>::new();
 
@@ -56,7 +51,7 @@ fn speed() {
 
     for _ in 0..2700 {
         for _ in 0..10 {
-            let commitment = pool.commit(U256::from(100)).unwrap();
+            let commitment = pool.commit(&test_signer(), U256::from(100)).unwrap();
             borrows.push(commitment)
         }
         while let Some(borrow) = borrows.pop() {
@@ -74,12 +69,11 @@ fn attempt_to_double_collect_with_partial_voucher_rejects() {
     let allocation_id = bytes(1);
 
     // Create a bunch of receipts
-    let mut pool = ReceiptPool::new();
-    pool.add_allocation(test_signer(), allocation_id);
+    let mut pool = ReceiptPool::new(allocation_id);
     let mut borrows = Vec::<Vec<u8>>::new();
     for _ in 0..10 {
         let fee = U256::from(1);
-        let commitment = pool.commit(fee).unwrap();
+        let commitment = pool.commit(&test_signer(), fee).unwrap();
         borrows.push(commitment);
     }
 
@@ -112,8 +106,7 @@ fn vouchers() {
     let allocation_id = bytes(1);
 
     // Create a bunch of receipts
-    let mut pool = ReceiptPool::new();
-    pool.add_allocation(test_signer(), allocation_id);
+    let mut pool = ReceiptPool::new(allocation_id);
     let mut borrows = Vec::<Vec<u8>>::new();
     let mut fees = U256::zero();
     for i in 2..10 {
@@ -123,7 +116,7 @@ fn vouchers() {
         for _ in 0..i {
             let fee = U256::from(1);
             fees += fee;
-            let commitment = pool.commit(fee).unwrap();
+            let commitment = pool.commit(&test_signer(), fee).unwrap();
             borrows.push(commitment);
         }
     }
@@ -232,11 +225,10 @@ fn partial_vouchers_combine() {
 }
 
 fn create_receipts(allocation_id: Address, count: usize) -> Vec<u8> {
-    let mut pool = ReceiptPool::new();
-    pool.add_allocation(test_signer(), allocation_id);
+    let mut pool = ReceiptPool::new(allocation_id);
     let mut borrows = Vec::<Vec<u8>>::new();
     for _ in 1..=count {
-        let commitment = pool.commit(U256::from(1)).unwrap();
+        let commitment = pool.commit(&test_signer(), U256::from(1)).unwrap();
         borrows.push(commitment);
     }
     receipts_from_borrows(borrows)
