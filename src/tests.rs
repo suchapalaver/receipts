@@ -1,8 +1,8 @@
-use crate::prelude::*;
-use crate::*;
+use std::{convert::TryFrom, time::Instant};
+
 use secp256k1::{PublicKey, SecretKey};
-use std::convert::TryFrom;
-use std::time::Instant;
+
+use crate::{prelude::*, *};
 
 pub fn bytes<const N: usize>(id: u8) -> [u8; N] {
     [id; N]
@@ -88,8 +88,8 @@ fn attempt_to_double_collect_with_partial_voucher_rejects() {
         .unwrap()
     };
 
-    let partial_1 = to_partial((&borrows[5..]).to_vec());
-    let partial_2 = to_partial((&borrows[..5]).to_vec());
+    let partial_1 = to_partial(borrows[5..].to_vec());
+    let partial_2 = to_partial(borrows[..5].to_vec());
 
     for ordering in [
         vec![partial_1.clone(), partial_2.clone()],
@@ -208,7 +208,7 @@ fn partial_vouchers_combine() {
     );
     let partial_vouchers: Vec<PartialVoucher> = receipts
         .chunks(112 * batch_size)
-        .map(|receipts| create_partial_voucher(receipts))
+        .map(create_partial_voucher)
         .collect();
     let oneshot_receipt = receipts_to_voucher(
         &allocation_id,

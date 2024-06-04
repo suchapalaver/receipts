@@ -1,11 +1,10 @@
-use lazy_static::lazy_static;
-use secp256k1::{Message, Secp256k1, SecretKey};
+pub use std::convert::TryInto as _;
 use std::{fmt, mem::size_of};
-pub use {
-    primitive_types::U256,
-    rand::{thread_rng as rng, Rng as _},
-    std::convert::TryInto as _,
-};
+
+use lazy_static::lazy_static;
+pub use primitive_types::U256;
+pub use rand::{thread_rng as rng, Rng as _};
+use secp256k1::{Message, Secp256k1, SecretKey};
 
 pub type Bytes32 = [u8; 32];
 pub type Address = [u8; 20];
@@ -28,7 +27,7 @@ lazy_static! {
 pub fn hash_bytes(bytes: &[u8]) -> Bytes32 {
     use tiny_keccak::Hasher;
     let mut hasher = tiny_keccak::Keccak::v256();
-    hasher.update(&bytes);
+    hasher.update(bytes);
     let mut output = Bytes32::default();
     hasher.finalize(&mut output);
     output
@@ -65,7 +64,7 @@ pub fn sign(data: &[u8], signer: &SecretKey) -> Result<Signature, SignError> {
     };
 
     let mut serialized = [0; 65];
-    (&mut serialized[..64]).copy_from_slice(&signature);
+    serialized[..64].copy_from_slice(&signature);
     serialized[64] = recovery_id;
 
     Ok(serialized)

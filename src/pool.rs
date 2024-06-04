@@ -1,7 +1,9 @@
-use crate::prelude::*;
+use std::fmt;
+
 use rand::RngCore;
 use secp256k1::SecretKey;
-use std::fmt;
+
+use crate::prelude::*;
 
 // Keep track of the offsets to index the data in an array.
 // I'm really happy with how this turned out to make book-keeping easier.
@@ -81,7 +83,7 @@ impl ReceiptPool {
     }
 
     pub fn commit(&mut self, signer: &SecretKey, locked_fee: U256) -> Result<Vec<u8>, BorrowFail> {
-        let receipt = if self.receipt_cache.len() == 0 {
+        let receipt = if self.receipt_cache.is_empty() {
             let mut receipt_id = ReceiptId::default();
             rng().fill_bytes(&mut receipt_id);
             PooledReceipt {
@@ -152,7 +154,7 @@ mod tests {
 
     #[track_caller]
     fn assert_successful_borrow(pool: &mut ReceiptPool, fee: impl Into<U256>) -> Vec<u8> {
-        pool.commit(&test_signer(), U256::from(fee.into()))
+        pool.commit(&test_signer(), fee.into())
             .expect("Should be able to borrow")
     }
 

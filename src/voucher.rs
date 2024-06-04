@@ -1,8 +1,10 @@
-use crate::prelude::*;
+use std::fmt;
+
 use itertools::Itertools as _;
 use secp256k1::{ecdsa, Message, PublicKey, SecretKey};
-use std::fmt;
 use tiny_keccak::{Hasher, Keccak};
+
+use crate::prelude::*;
 
 #[derive(Debug, PartialEq)]
 pub enum VoucherError {
@@ -151,7 +153,7 @@ fn verify_receipts(
     if Receipts::new(data)?
         .map(|receipt| *receipt.id)
         .tuple_windows()
-        .any(|(a, b)| !(a < b))
+        .any(|(a, b)| a >= b)
     {
         return Err(VoucherError::UnorderedReceipts);
     }
@@ -191,7 +193,7 @@ pub fn combine_partial_vouchers(
     voucher_signer: &SecretKey,
     partial_vouchers: &[PartialVoucher],
 ) -> Result<Voucher, VoucherError> {
-    if partial_vouchers.len() == 0 {
+    if partial_vouchers.is_empty() {
         return Err(VoucherError::NoValue);
     }
 
@@ -212,7 +214,7 @@ pub fn combine_partial_vouchers(
     }
 
     // Verify signatures
-    let partial_voucher_signer = PublicKey::from_secret_key(&SECP256K1, &voucher_signer);
+    let partial_voucher_signer = PublicKey::from_secret_key(&SECP256K1, voucher_signer);
     for partial_voucher in partial_vouchers {
         let mut hasher = Keccak::v256();
         hasher.update(allocation_id);
