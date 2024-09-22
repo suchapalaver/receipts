@@ -15,6 +15,7 @@ pub enum VoucherError {
     UnorderedPartialVouchers,
     NoValue,
     InvalidRecoveryId,
+    VoucherValueTooLarge,
 }
 
 impl std::error::Error for VoucherError {}
@@ -29,6 +30,7 @@ impl fmt::Display for VoucherError {
             Self::UnorderedPartialVouchers => write!(f, "Unordered partial vouchers"),
             Self::NoValue => write!(f, "Receipts have no value"),
             Self::InvalidRecoveryId => SignError::InvalidRecoveryId.fmt(f),
+            Self::VoucherValueTooLarge => write!(f, "Voucher value too large"),
         }
     }
 }
